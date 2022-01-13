@@ -1,3 +1,5 @@
+![](mushroom.png)
+
 # Setting up listenable pulse sink.
 
 ```
@@ -39,3 +41,9 @@ post-processed the stuff which i did not manage to get into LISP).
 To "run" this script you need to select a new, preferably empty (will be
 overwritten) audio track (mono?) and hit "Tools->Open Nyquist Prompt". You'll
 get a LISP input window where you can put that code.
+
+# Inspired by
+
+https://www.youtube.com/watch?v=qnL40CbuodU
+
+Go take a look at https://oscilloscopemusic.com/
