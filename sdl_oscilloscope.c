@@ -16,12 +16,16 @@
 
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_opengl.h>
+#include <SDL2/SDL_keycode.h>
 
 #include <stdbool.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <string.h>
 #include <fcntl.h>
+
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
 
 static const char* vertex_shader_path = "shader.vert";
 static const char* fragment_shader_path = "shader.frag";
@@ -105,7 +109,7 @@ int main(int argc, char* argv[]) {
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
 
     // Initialize window.
-    static const int width = 800;
+    static const int width = 600;
     static const int height = 600;
 
     SDL_Window* window = SDL_CreateWindow("", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width, height,
@@ -147,10 +151,6 @@ int main(int argc, char* argv[]) {
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertex_buffer_data), vertex_buffer_data, GL_STATIC_DRAW);
 
     // Create the audio data buffers.
-    GLuint pcm_gpu;
-    glGenBuffers(1, &pcm_gpu);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, pcm_gpu);
-
     int num_pcm_samples = 1024;
     int pcm_buffer_size = num_pcm_samples * 2 * sizeof(GLfloat);
 
@@ -163,8 +163,14 @@ int main(int argc, char* argv[]) {
 
     GLfloat* pcm_host = (GLfloat*)malloc(pcm_buffer_size);
     int position = 0;
+    int offset = 0;
 
-    glBufferData(GL_SHADER_STORAGE_BUFFER, pcm_buffer_size, pcm_host, GL_DYNAMIC_DRAW);
+    GLuint pcm_gpu;
+    glGenBuffers(1, &pcm_gpu);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, pcm_gpu);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, pcm_buffer_size + sizeof(int), NULL, GL_DYNAMIC_DRAW);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(int), &offset);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, sizeof(int), pcm_buffer_size, pcm_host);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, pcm_gpu);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
@@ -181,9 +187,18 @@ int main(int argc, char* argv[]) {
                 if(event.key.keysym.sym == SDLK_ESCAPE) {
                     return 0;
                 }
+                if(event.key.keysym.sym == SDLK_KP_PLUS) {
+                    offset = MIN(900, offset + 1);
+                    printf("%d\n", offset);
+                }
+                if(event.key.keysym.sym == SDLK_KP_MINUS) {
+                    offset = MAX(0, offset - 1);
+                    printf("%d\n", offset);
+                }
                 break;
             }
         }
+
         int num_available_samples;
 
         do {
@@ -205,7 +220,8 @@ int main(int argc, char* argv[]) {
         } while(num_available_samples != 0);
 
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, pcm_gpu);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, pcm_buffer_size, pcm_host, GL_DYNAMIC_DRAW);
+        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(int), &offset);
+        glBufferSubData(GL_SHADER_STORAGE_BUFFER, sizeof(int), pcm_buffer_size, pcm_host);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
         glDrawArrays(GL_TRIANGLES, 0, 6);
