@@ -1,6 +1,6 @@
 ![](mushroom.png)
 
-# Setting up listenable pulse sink.
+# [OBSOLETE] Setting up listenable pulse sink.
 
 ```
 # Find currently active default output.
@@ -29,7 +29,12 @@ gcc -std=c11 sdl_oscilloscope.c `sdl2-config --libs --cflags` -lGL -Wall
 # You'll need to set apps to actually write to this sink.
 # The output is binary `--format`. `float32le` works for me.
 # `u8` is fine too, but has much less resolution.
-parec --raw --format=float32le -d record-n-play.monitor | ./a.out
+# parec --raw --format=float32le -d record-n-play.monitor | ./a.out
+
+# The default arch config of PA includes monitor sources, which is
+# exactly what we need for this. You can select the source for parec
+# in the pulseaudio `Recording` tab.
+# parec --raw --format=float32le | ./a.out
 ```
 
 # Audacity
