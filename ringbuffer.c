@@ -1,3 +1,5 @@
+// Compile with gcc -std=c11 ringbuffer.c -lrt
+//
 // Required for ftruncate...
 #define _POSIX_C_SOURCE 200112L
 
