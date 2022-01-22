@@ -20,6 +20,7 @@
 #include <string.h>
 #include <time.h> // TODO
 #include <unistd.h>
+#include <assert.h>
 
 #include <fftw3.h>
 
@@ -78,6 +79,64 @@ char* read_file(char const* path, int* size) {
     return data;
 }
 
+void initialize_sdl() {
+    SDL_Init(SDL_INIT_VIDEO);
+    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+    SDL_GL_SetAttribute(SDL_GL_ACCELERATED_VISUAL, 1);
+    SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
+    SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
+    SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
+    SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
+
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+}
+
+/* WINDOW */
+
+struct Window {
+    SDL_Window* window;
+    SDL_GLContext context;
+};
+
+struct Window create_window() {
+    struct Window window;
+
+    static const int width = 1920;
+    static const int height = 1080;
+
+    int pos = SDL_WINDOWPOS_CENTERED;
+    Uint32 flags = SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN;
+    window.window = SDL_CreateWindow("", pos, pos, width, height, flags);
+    window.context = SDL_GL_CreateContext(window.window);
+
+    glDisable(GL_DEPTH_TEST);
+    glClearColor(0.0, 0.0, 0.0, 0.0);
+    glViewport(0, 0, width, height);
+
+    return window;
+}
+
+void update_display(struct Window window) {
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    SDL_GL_SwapWindow(window.window);
+}
+
+void delete_window(struct Window window) {
+    SDL_GL_DeleteContext(window.context);
+    SDL_DestroyWindow(window.window);
+}
+
+/* SHADER PROGRAM */
+
+struct Program {
+    GLuint vs;
+    GLuint fs;
+    GLuint program;
+};
+
 GLuint create_shader(GLenum type, char const* source_path) {
     GLuint shader = glCreateShader(type);
 
@@ -104,54 +163,6 @@ GLuint create_shader(GLenum type, char const* source_path) {
     return shader;
 }
 
-void initialize_sdl() {
-    SDL_Init(SDL_INIT_VIDEO);
-    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-    SDL_GL_SetAttribute(SDL_GL_ACCELERATED_VISUAL, 1);
-    SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
-    SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
-    SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
-    SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
-
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-}
-
-struct Window {
-    SDL_Window* window;
-    SDL_GLContext context;
-};
-
-struct Window create_window() {
-    struct Window window;
-
-    static const int width = 600;
-    static const int height = 600;
-
-    int pos = SDL_WINDOWPOS_CENTERED;
-    Uint32 flags = SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN;
-    window.window = SDL_CreateWindow("", pos, pos, width, height, flags);
-    window.context = SDL_GL_CreateContext(window.window);
-
-    glDisable(GL_DEPTH_TEST);
-    glClearColor(0.0, 0.0, 0.0, 0.0);
-    glViewport(0, 0, width, height);
-
-    return window;
-}
-
-void delete_window(struct Window window) {
-    SDL_GL_DeleteContext(window.context);
-    SDL_DestroyWindow(window.window);
-}
-
-struct Program {
-    GLuint vs;
-    GLuint fs;
-    GLuint program;
-};
-
 struct Program create_program() {
     struct Program program;
 
@@ -174,6 +185,8 @@ void delete_program(struct Program program) {
     glDeleteShader(program.fs);
 }
 
+/* RENDERING PRIMITIVES */
+
 struct PrimitivesBuffers {
     GLuint vao;
     GLuint vbo;
@@ -193,7 +206,7 @@ struct PrimitivesBuffers create_primitives_buffers() {
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, NULL);
 
 #define XY(x, y) x, y
-    const GLfloat vertex_buffer_data[] = {XY(-1, -1), XY(1, -1), XY(1, 1), XY(-1, -1), XY(1, 1), XY(-1, 1)};
+    const float vertex_buffer_data[] = {XY(-1, -1), XY(1, -1), XY(1, 1), XY(-1, -1), XY(1, 1), XY(-1, 1)};
 #undef XY
 
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertex_buffer_data), vertex_buffer_data, GL_STATIC_DRAW);
@@ -206,68 +219,79 @@ void delete_primitives_buffers(struct PrimitivesBuffers primitives_buffers) {
     glDeleteVertexArrays(1, &primitives_buffers.vao);
 }
 
-struct ProgramBuffers {
-    GLuint parameters_gpu;
-    GLuint pcm_left_gpu;
-    GLuint pcm_right_gpu;
-    GLuint dft_gpu;
+/* GENERIC GPU BUFFER OPS */
+
+void copy_buffer_to_gpu(GLuint buffer, char* data, int buffer_offset, int size) {
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, buffer);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, buffer_offset, size, data);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+}
+
+void copy_ringbuffer_to_gpu(GLuint buffer, char* data, int buffer_offset, int size, int wrap_offset) {
+    int tail_size = size - wrap_offset;
+    copy_buffer_to_gpu(buffer, data + wrap_offset, buffer_offset, tail_size);
+    copy_buffer_to_gpu(buffer, data, buffer_offset + tail_size, wrap_offset);
+}
+
+/* PCM DATA */
+
+struct PcmData {
+    int num_samples;
+
+    float* ring_left;
+    float* ring_right;
+    int offset;
+
+    GLuint gpu_buffer;
 };
 
-struct ProgramBuffers create_program_buffers(int num_pcm_samples) {
-    struct ProgramBuffers program_buffers;
+struct PcmData create_pcm_data(int num_samples) {
+    struct PcmData pcm_data = {.num_samples = num_samples,
+                               .ring_left = malloc(num_samples * sizeof(float)),
+                               .ring_right = malloc(num_samples * sizeof(float)),
+                               .offset = 0};
+    for(int i = 0; i < num_samples; i++) {
+        pcm_data.ring_left[i] = 0.0f;
+        pcm_data.ring_right[i] = 0.0f;
+    }
 
-    glGenBuffers(1, &program_buffers.parameters_gpu);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, program_buffers.parameters_gpu);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(int), NULL, GL_DYNAMIC_DRAW);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, program_buffers.parameters_gpu);
-
-    int pcm_buffer_size = num_pcm_samples * sizeof(GLfloat);
-
-    glGenBuffers(1, &program_buffers.pcm_left_gpu);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, program_buffers.pcm_left_gpu);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, pcm_buffer_size, NULL, GL_DYNAMIC_DRAW);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, program_buffers.pcm_left_gpu);
-
-    glGenBuffers(1, &program_buffers.pcm_right_gpu);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, program_buffers.pcm_right_gpu);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, pcm_buffer_size, NULL, GL_DYNAMIC_DRAW);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, program_buffers.pcm_right_gpu);
-
-    // DFT has same size as pcm?
-    glGenBuffers(1, &program_buffers.dft_gpu);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, program_buffers.dft_gpu);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, pcm_buffer_size, NULL, GL_DYNAMIC_DRAW);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, program_buffers.dft_gpu);
-
+    glGenBuffers(1, &pcm_data.gpu_buffer);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, pcm_data.gpu_buffer);
+    int gpu_buffer_size = sizeof(int) + 2 * num_samples * sizeof(float);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, gpu_buffer_size, NULL, GL_DYNAMIC_DRAW);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(int), &num_samples);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, pcm_data.gpu_buffer);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
-    return program_buffers;
+    return pcm_data;
 }
 
-void delete_program_buffers(struct ProgramBuffers program_buffers) {
-    glDeleteBuffers(1, &program_buffers.parameters_gpu);
-    glDeleteBuffers(1, &program_buffers.pcm_left_gpu);
-    glDeleteBuffers(1, &program_buffers.pcm_right_gpu);
-    glDeleteBuffers(1, &program_buffers.dft_gpu);
+void copy_pcm_data_to_gpu(struct PcmData pcm_data) {
+    GLuint buffer = pcm_data.gpu_buffer;
+    char* left = (char*)pcm_data.ring_left;
+    char* right = (char*)pcm_data.ring_right;
+    int pcm_size = pcm_data.num_samples * sizeof(float);
+    int pcm_wrap_offset = pcm_data.offset * sizeof(float);
+    copy_ringbuffer_to_gpu(buffer, left, sizeof(int), pcm_size, pcm_wrap_offset);
+    copy_ringbuffer_to_gpu(buffer, right, sizeof(int) + pcm_size, pcm_size, pcm_wrap_offset);
 }
 
-void update_display(struct Window window) {
-    glClear(GL_COLOR_BUFFER_BIT);
-    glDrawArrays(GL_TRIANGLES, 0, 6);
-    SDL_GL_SwapWindow(window.window);
+void delete_pcm_data(struct PcmData pcm_data) {
+    glDeleteBuffers(1, &pcm_data.gpu_buffer);
+    free(pcm_data.ring_left);
+    free(pcm_data.ring_right);
 }
+
+/* PCM INPUT STREAM */
 
 struct ThreadData {
     bool close_requested;
-
-    int pcm_samples;
-    int pcm_offset;
-    float* pcm_ring_buffer_left;
-    float* pcm_ring_buffer_right;
+    struct PcmData* pcm_data;
 };
 
 void* input_thread_function(void* data_raw) {
     struct ThreadData* data = (struct ThreadData*)data_raw;
+    struct PcmData* pcm = data->pcm_data;
 
     // Initialize input byte buffer.
     int num_buffer_floats = 4096;
@@ -287,18 +311,18 @@ void* input_thread_function(void* data_raw) {
         }
 
         int samples_available = (buffer_offset / 8);
-        int samples_fitting = data->pcm_samples - data->pcm_offset;
+        int samples_fitting = pcm->num_samples - pcm->offset;
 
         for(int i = 0; i < MIN(samples_fitting, samples_available); i++) {
-            data->pcm_ring_buffer_left[data->pcm_offset + i] = buffer_floats[2 * i];
-            data->pcm_ring_buffer_right[data->pcm_offset + i] = buffer_floats[2 * i + 1];
+            pcm->ring_left[pcm->offset + i] = buffer_floats[2 * i];
+            pcm->ring_right[pcm->offset + i] = buffer_floats[2 * i + 1];
         }
         for(int i = samples_fitting; i < samples_available; i++) {
-            data->pcm_ring_buffer_left[i] = buffer_floats[2 * i];
-            data->pcm_ring_buffer_right[i] = buffer_floats[2 * i + 1];
+            pcm->ring_left[i] = buffer_floats[2 * i];
+            pcm->ring_right[i] = buffer_floats[2 * i + 1];
         }
 
-        data->pcm_offset = (data->pcm_offset + samples_available) % data->pcm_samples;
+        pcm->offset = (pcm->offset + samples_available) % pcm->num_samples;
 
         // Move multiples of 2 floats over to ringbuffer and update position.
         // Can't use the memcpy aproach since i need to split the channels.
@@ -325,19 +349,12 @@ struct InputStream {
     struct ThreadData* thread_data;
 };
 
-struct InputStream create_input_stream(int num_pcm_samples) {
+struct InputStream create_input_stream(struct PcmData* pcm_data) {
     struct InputStream input_stream;
     input_stream.thread_data = malloc(sizeof(struct ThreadData));
 
     input_stream.thread_data->close_requested = false;
-    input_stream.thread_data->pcm_samples = num_pcm_samples;
-    input_stream.thread_data->pcm_ring_buffer_left = malloc(num_pcm_samples * sizeof(float));
-    input_stream.thread_data->pcm_ring_buffer_right = malloc(num_pcm_samples * sizeof(float));
-    for(int i = 0; i < num_pcm_samples; i++) {
-        input_stream.thread_data->pcm_ring_buffer_left[i] = 0.0f;
-        input_stream.thread_data->pcm_ring_buffer_right[i] = 0.0f;
-    }
-    input_stream.thread_data->pcm_offset = 0;
+    input_stream.thread_data->pcm_data = pcm_data;
 
     int failure = pthread_create(&input_stream.thread, NULL, input_thread_function, (void*)input_stream.thread_data);
     if(failure) {
@@ -350,35 +367,80 @@ struct InputStream create_input_stream(int num_pcm_samples) {
 
 void delete_input_stream(struct InputStream input_stream) {
     input_stream.thread_data->close_requested = true;
-
     pthread_join(input_stream.thread, NULL);
-
-    free(input_stream.thread_data->pcm_ring_buffer_left);
-    free(input_stream.thread_data->pcm_ring_buffer_right);
     free(input_stream.thread_data);
 }
 
+/* DFT DATA */
+
 struct DftData {
+    int size;
     float* in;
     float* out;
     fftwf_plan plan;
+
+    float* smoothed;
+
+    GLuint gpu_buffer;
 };
 
-struct DftData create_dft_data(int num_pcm_samples) {
-    struct DftData dft_data;
+struct DftData create_dft_data(int dft_size) {
+    assert(dft_size % 2 == 0);
+    struct DftData dft_data = {.size = dft_size,
+                               .in = fftwf_malloc(dft_size * sizeof(float)),
+                               .out = fftwf_malloc(dft_size * sizeof(fftwf_complex)),
+                               .smoothed = malloc(dft_size * sizeof(fftwf_complex))};
+    dft_data.plan = fftwf_plan_r2r_1d(dft_size, dft_data.in, dft_data.out, FFTW_R2HC, 0);
 
-    dft_data.in = fftwf_malloc(2 * num_pcm_samples * sizeof(float));
-    dft_data.out = fftwf_malloc(2 * num_pcm_samples * sizeof(float));
-    dft_data.plan = fftwf_plan_r2r_1d(1000 , dft_data.in, dft_data.out, FFTW_R2HC, 0);
+    for(int i = 0; i < dft_size; i++) {
+        dft_data.smoothed[i] = 0.0f;
+    }
+
+    glGenBuffers(1, &dft_data.gpu_buffer);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, dft_data.gpu_buffer);
+    int gpu_buffer_size = sizeof(int) + 2 * dft_size * sizeof(float);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, gpu_buffer_size, NULL, GL_DYNAMIC_DRAW);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(int), &dft_size);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, dft_data.gpu_buffer);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
     return dft_data;
 }
 
+#define PI 3.1415
+
+void compute_and_copy_dft_data_to_gpu(struct PcmData pcm_data, struct DftData dft_data) {
+    int floats_to_start = MIN(pcm_data.offset, dft_data.size);
+    int floats_from_end = dft_data.size - floats_to_start;
+    memcpy(dft_data.in, pcm_data.ring_left + pcm_data.num_samples - floats_from_end, floats_from_end * sizeof(float));
+    float* second_half = pcm_data.ring_left + pcm_data.offset - floats_to_start;
+    memcpy(dft_data.in + floats_from_end, second_half, floats_to_start * sizeof(float));
+
+    // Multiply witn Hamming window.
+    for(int i = 0; i < dft_data.size; i++) {
+        dft_data.in[i] *= 0.54 - (0.46 * cos(2 * PI * (i / (dft_data.size - 1.0))));
+    }
+    fftwf_execute(dft_data.plan);
+
+    for(int i = 0; i < dft_data.size; i++) {
+        dft_data.smoothed[i] = MAX(0.95 * dft_data.smoothed[i], dft_data.out[i]);
+    }
+
+    int buffer_size = dft_data.size * sizeof(float);
+    copy_buffer_to_gpu(dft_data.gpu_buffer, (char*)dft_data.out, sizeof(int), buffer_size);
+    copy_buffer_to_gpu(dft_data.gpu_buffer, (char*)dft_data.smoothed, sizeof(int) + buffer_size, buffer_size);
+}
+
 void delete_dft_data(struct DftData dft_data) {
+    glDeleteBuffers(1, &dft_data.gpu_buffer);
+
+    free(dft_data.smoothed);
     fftwf_destroy_plan(dft_data.plan);
     fftwf_free(dft_data.in);
     fftwf_free(dft_data.out);
 }
+
+/* EVENT HANDLING AND OTHER */
 
 struct UserContext {
     bool quit_requested;
@@ -420,68 +482,30 @@ void handle_events(struct UserContext* user_context) {
     }
 }
 
-void copy_buffer_to_gpu(GLuint buffer, char* data, int buffer_offset, int size) {
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, buffer);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, buffer_offset, size, data);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-}
-
-void copy_ringbuffer_to_gpu(GLuint buffer, char* data, int buffer_offset, int size, int wrap_offset) {
-    int tail_size = size - wrap_offset;
-    copy_buffer_to_gpu(buffer, data + wrap_offset, buffer_offset, tail_size);
-    copy_buffer_to_gpu(buffer, data, buffer_offset + tail_size, wrap_offset);
-}
-
 int main(int argc, char* argv[]) {
     initialize_sdl();
     struct Window window = create_window();
     struct Program program = create_program();
     struct PrimitivesBuffers primitives_buffers = create_primitives_buffers();
 
-    int num_pcm_samples = 1 * 44100;
-
-    int pcm_buffer_size = num_pcm_samples * 2 * sizeof(GLfloat);
-    int gpu_data_size = sizeof(int) + pcm_buffer_size;
-    struct ProgramBuffers program_buffers = create_program_buffers(gpu_data_size);
-
-    struct InputStream input_stream = create_input_stream(num_pcm_samples);
-    struct ThreadData* thread_data = input_stream.thread_data;
-
-    struct DftData dft_data = create_dft_data(num_pcm_samples);
+    struct PcmData pcm_data = create_pcm_data(44100);
+    struct InputStream input_stream = create_input_stream(&pcm_data);
+    struct DftData dft_data = create_dft_data(2048);
 
     struct UserContext user_context;
     user_context.quit_requested = false;
     user_context.offset = 0;
 
     while(!user_context.quit_requested) {
-        GLuint parameters_buffer = program_buffers.parameters_gpu;
-        char* pcm_num_samples_data = (char*)&thread_data->pcm_samples;
-        copy_buffer_to_gpu(parameters_buffer, pcm_num_samples_data, 0, sizeof(int));
-
-        GLuint pcm_left_buffer = program_buffers.pcm_left_gpu;
-        GLuint pcm_right_buffer = program_buffers.pcm_right_gpu;
-        char* pcm_data_left = (char*)thread_data->pcm_ring_buffer_left;
-        char* pcm_data_right = (char*)thread_data->pcm_ring_buffer_right;
-        int pcm_size = thread_data->pcm_samples * sizeof(float);
-        int pcm_wrap_offset = thread_data->pcm_offset * sizeof(float);
-        copy_ringbuffer_to_gpu(pcm_left_buffer, pcm_data_left, 0, pcm_size, pcm_wrap_offset);
-        copy_ringbuffer_to_gpu(pcm_right_buffer, pcm_data_right, 0, pcm_size, pcm_wrap_offset);
-
-        // Copy ringbuffer to dft input array.
-        char* dst = (char*)dft_data.in;
-        memcpy(dst, pcm_data_left + pcm_wrap_offset, pcm_size - pcm_wrap_offset);
-        memcpy(dst + pcm_size - pcm_wrap_offset, pcm_data_left, pcm_wrap_offset);
-        fftwf_execute(dft_data.plan);
-
-        copy_buffer_to_gpu(program_buffers.dft_gpu, (char*)dft_data.out, 0, pcm_size);
-
+        copy_pcm_data_to_gpu(pcm_data);
+        compute_and_copy_dft_data_to_gpu(pcm_data, dft_data);
         update_display(window);
         handle_events(&user_context);
     }
 
     delete_dft_data(dft_data);
     delete_input_stream(input_stream);
-    delete_program_buffers(program_buffers);
+    delete_pcm_data(pcm_data);
     delete_primitives_buffers(primitives_buffers);
     delete_program(program);
     delete_window(window);
