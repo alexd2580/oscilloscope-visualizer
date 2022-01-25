@@ -9,6 +9,7 @@ in vec2 pos;
 
 layout(std430, binding = 2) buffer pcm_data {
     int pcm_samples;
+    int sample_index;
     // `pcm` contains `2 * pcm_samples` entries.
     // These are the left channel values followed by the right channel values.
     float pcm[];
@@ -16,6 +17,7 @@ layout(std430, binding = 2) buffer pcm_data {
 
 layout(std430, binding = 3) buffer dft_data {
     int dft_size;
+    int dominant_frequency_period;
     // `dft` contains `dft_size` entries.
     // These are the raw dft values followed by the smoothed values.
     // Both raw and smooth sections follow the same pattern:
@@ -66,49 +68,100 @@ vec2 smooth_dft_at(int index) {
     return vec2(dft[dft_size + index], index == 0 || index == (dft_size / 2) ? 0.0 : dft[dft_size + dft_size - index]);
 }
 
-void main_dft() {
-    int data_size = (dft_size / 2);
+vec4 dft_blocks(vec2 p) {
+    int data_size = dft_size / 2;
+
     float max_x = log2(float(data_size));
-    float rel_x = (pos.x + 1.0) / 2.0;
-    // For linear
-    // float float_x = rel_x * data_size;
-    // For logarithmic
-    float float_x = pow(2, max_x * rel_x);
+    float float_x = pow(2, max_x * p.x);
+    int index = int(round(float_x));
 
-    int index_a = int(floor(float_x));
-    int index_b = int(ceil(float_x));
+    float y_raw = length(dft_at(index));
+    float y_smooth = length(smooth_dft_at(index));
 
-    float y_a = length(dft_at(index_a));
-    float y_b = length(dft_at(index_b));
-
-    // float y_a = sin(floor(float_x));
-    // float y_b = sin(ceil(float_x));
-    float mix_ab = fract(float_x);
-    float dft_y = mix(y_a, y_b, mix_ab);
-
-    float vis_y = float_x * dft_y / 16000.0;
-    float pos_y = 0.5 * pos.y + 0.5;
-
-    float lum = pos_y < dft_y / 256 ? 1.0 : 0.0;
-    color = vec4(lum, lum / 2, 0, 0);
+    if (p.y < y_raw / 256) {
+        return vec4(1, 0, 0, 0);
+    } else if (p.y < y_smooth / 256) {
+        return vec4(1, 0.5, 0, 0);
+    }
+    return vec4(0);
 }
 
-void main_linear_pcm() {
-    int sample_num = int(pcm_samples * (pos.x + 1.0) / 2.0);
+vec4 pcm_moving_blocks(vec2 p, int block_size, int gap_size) {
+    int window_size = block_size + gap_size;
+    int relative_sample_index = window_size + int((pcm_samples - window_size) * p.x);
+    int absolute_sample_index = sample_index - pcm_samples + relative_sample_index;
+    int block_start_offset = absolute_sample_index % window_size;
+    if (block_start_offset < gap_size) {
+        return vec4(0);
+    }
+    int local_sample_index = relative_sample_index - block_start_offset;
 
-    // vec2 prev_point = vec2(max(0, sample_num - 1), pcm[max(0, sample_num - 1)]);
-    // vec2 this_point = vec2(sample_num, pcm[sample_num]);
-    // vec2 next_point = vec2(min(sample_num + 1, pcm_samples - 1), pcm[min(sample_num + 1, pcm_samples - 1)]);
-    //
-    // vec2 cur_pos = vec2(sample_num, pos.y);
-    //
-    // float dist_to_value = distance_to_line(prev_point, this_point, cur_pos);
-    float dist = abs(pcm[sample_num] - pos.y);
+    float value = 0;
+    for (int i=0; i < window_size; i++) {
+        value = max(abs(value), pcm[min(local_sample_index + i, pcm_samples - 1)]);
+    }
+
+    float lum = abs(value) > p.y ? 1.0 : 0.0;
+    return vec4(lum, lum / 2, 0, 0);
+
+    // float dist = abs(pcm[sample_num] - 2 * p.y);
+    // float lum = 1.0 / (1000 * dist * dist + 1);
+    // return vec4(lum, lum / 2, 0, 0);
+}
+
+vec4 pcm_still_blocks(vec2 p, int block_size, int gap_size) {
+    int window_size = block_size + gap_size;
+    int relative_sample_index = int((pcm_samples - window_size) * p.x);
+    int block_start_offset = relative_sample_index % window_size;
+    if (block_start_offset < gap_size) {
+        return vec4(0);
+    }
+    int local_sample_index = relative_sample_index - block_start_offset;
+
+    float value = 0;
+    for (int i=0; i < window_size; i++) {
+        value = max(abs(value), pcm[min(local_sample_index + i, pcm_samples - 1)]);
+    }
+
+    float lum = abs(value) > p.y ? 1.0 : 0.0;
+    return vec4(lum, lum / 2, 0, 0);
+
+    // float dist = abs(pcm[sample_num] - 2 * p.y);
+    // float lum = 1.0 / (1000 * dist * dist + 1);
+    // return vec4(lum, lum / 2, 0, 0);
+}
+
+vec4 pcm_line_32(vec2 p) {
+    int sample_num = 199 * pcm_samples / 200 + int(pcm_samples / 200 * p.x);
+    // sample_num -= sample_index % dominant_frequency_period;
+
+    float dist = abs(pcm[sample_num] - 2.0 * p.y - 1.0);
     float lum = 1.0 / (1000 * dist * dist + 1);
-    color = color / 0.99 + 0.01 * vec4(lum, lum / 2, 0, 0);
+    return vec4(lum, lum / 2, 0, 0);
+}
+vec4 pcm_line(vec2 p) {
+    int sample_num = int(pcm_samples * p.x);
+
+    float dist = abs(pcm[sample_num] - 2 * p.y);
+    float lum = 1.0 / (1000 * dist * dist + 1);
+    return vec4(lum, lum / 2, 0, 0);
+}
+
+vec2 scale(vec2 p, float x, float y) {
+    return vec2(p.x * x, p.y * y);
+}
+
+vec2 translate(vec2 p, vec2 o) {
+    return p + o;
 }
 
 void main() {
-    main_dft();
+    // color = vec4(log2(dominant_frequency_period) / 20);
+    // color = vec4(float(sample_index % 44100) / 44100);
+    // return;
+    // color = dft_blocks() + pcm_line(pos) + pcm_line_2(pos) + pcm_line_32(pos);
+    color = pcm_still_blocks(pos, 500, 900);
     // main_xy();
+    //
+    // color = visualization(transform(pos));
 }

@@ -12,6 +12,7 @@
  * Taken from https://gist.github.com/koute/7391344
 */
 
+#include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -20,69 +21,30 @@
 #include <string.h>
 #include <time.h> // TODO
 #include <unistd.h>
-#include <assert.h>
 
 #include <fftw3.h>
+
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #define GL_GLEXT_PROTOTYPES
 
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_keycode.h>
 #include <SDL2/SDL_opengl.h>
-#include <SDL2/SDL_opengl_glext.h>
+
+#include "program.h"
+#include "pcm.h"
+#include "buffers.h"
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 #define CLAMP(x, l, u) MAX((l), MIN((x), (u)))
 
-static const char* vertex_shader_path = "shader.vert";
-static const char* fragment_shader_path = "shader.frag";
-
-char* read_file(char const* path, int* size) {
-    FILE* fp = fopen(path, "r");
-    if(fp == NULL) {
-        fprintf(stderr, "Cannot open file %s\n", path);
-        exit(1);
-    }
-
-    if(fseek(fp, 0L, SEEK_END) != 0) {
-        fprintf(stderr, "Failed to fseek\n");
-        exit(1);
-    }
-
-    long bufsize = ftell(fp);
-    if(bufsize == -1) {
-        fprintf(stderr, "Failed to ftell\n");
-        exit(1);
-    }
-
-    if(size != NULL) {
-        *size = bufsize;
-    }
-
-    char* data = malloc(sizeof(char) * (bufsize + 1));
-
-    if(fseek(fp, 0L, SEEK_SET) != 0) {
-        fprintf(stderr, "Failed to fseek\n");
-        exit(1);
-    }
-
-    fread(data, sizeof(char), bufsize, fp);
-    if(ferror(fp) != 0) {
-        fprintf(stderr, "Failed to fread\n");
-        exit(1);
-    }
-
-    data[bufsize] = '\0';
-    fclose(fp);
-
-    return data;
-}
-
 void initialize_sdl() {
     SDL_Init(SDL_INIT_VIDEO);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-    SDL_GL_SetAttribute(SDL_GL_ACCELERATED_VISUAL, 1);
+    /* SDL_GL_SetAttribute(SDL_GL_ACCELERATED_VISUAL, 1); */
     SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
     SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
     SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
@@ -129,62 +91,6 @@ void delete_window(struct Window window) {
     SDL_DestroyWindow(window.window);
 }
 
-/* SHADER PROGRAM */
-
-struct Program {
-    GLuint vs;
-    GLuint fs;
-    GLuint program;
-};
-
-GLuint create_shader(GLenum type, char const* source_path) {
-    GLuint shader = glCreateShader(type);
-
-    int source_len;
-    char* source = read_file(source_path, &source_len);
-
-    glShaderSource(shader, 1, (const GLchar**)&source, &source_len);
-    glCompileShader(shader);
-
-    free(source);
-
-    GLint status;
-    glGetShaderiv(shader, GL_COMPILE_STATUS, &status);
-    if(status == GL_FALSE) {
-        size_t max_size = 10000;
-        GLchar* log = (GLchar*)malloc(max_size * sizeof(GLchar));
-        GLsizei length;
-        glGetShaderInfoLog(shader, max_size, &length, log);
-
-        fprintf(stderr, "shader compilation failed\n%.*s", length, log);
-        exit(1);
-    }
-
-    return shader;
-}
-
-struct Program create_program() {
-    struct Program program;
-
-    program.vs = create_shader(GL_VERTEX_SHADER, vertex_shader_path);
-    program.fs = create_shader(GL_FRAGMENT_SHADER, fragment_shader_path);
-    program.program = glCreateProgram();
-    glAttachShader(program.program, program.vs);
-    glAttachShader(program.program, program.fs);
-
-    glBindAttribLocation(program.program, 0, "position");
-    glLinkProgram(program.program);
-    glUseProgram(program.program);
-
-    return program;
-}
-
-void delete_program(struct Program program) {
-    glDeleteProgram(program.program);
-    glDeleteShader(program.vs);
-    glDeleteShader(program.fs);
-}
-
 /* RENDERING PRIMITIVES */
 
 struct PrimitivesBuffers {
@@ -219,158 +125,6 @@ void delete_primitives_buffers(struct PrimitivesBuffers primitives_buffers) {
     glDeleteVertexArrays(1, &primitives_buffers.vao);
 }
 
-/* GENERIC GPU BUFFER OPS */
-
-void copy_buffer_to_gpu(GLuint buffer, char* data, int buffer_offset, int size) {
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, buffer);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, buffer_offset, size, data);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-}
-
-void copy_ringbuffer_to_gpu(GLuint buffer, char* data, int buffer_offset, int size, int wrap_offset) {
-    int tail_size = size - wrap_offset;
-    copy_buffer_to_gpu(buffer, data + wrap_offset, buffer_offset, tail_size);
-    copy_buffer_to_gpu(buffer, data, buffer_offset + tail_size, wrap_offset);
-}
-
-/* PCM DATA */
-
-struct PcmData {
-    int num_samples;
-
-    float* ring_left;
-    float* ring_right;
-    int offset;
-
-    GLuint gpu_buffer;
-};
-
-struct PcmData create_pcm_data(int num_samples) {
-    struct PcmData pcm_data = {.num_samples = num_samples,
-                               .ring_left = malloc(num_samples * sizeof(float)),
-                               .ring_right = malloc(num_samples * sizeof(float)),
-                               .offset = 0};
-    for(int i = 0; i < num_samples; i++) {
-        pcm_data.ring_left[i] = 0.0f;
-        pcm_data.ring_right[i] = 0.0f;
-    }
-
-    glGenBuffers(1, &pcm_data.gpu_buffer);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, pcm_data.gpu_buffer);
-    int gpu_buffer_size = sizeof(int) + 2 * num_samples * sizeof(float);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, gpu_buffer_size, NULL, GL_DYNAMIC_DRAW);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(int), &num_samples);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, pcm_data.gpu_buffer);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-
-    return pcm_data;
-}
-
-void copy_pcm_data_to_gpu(struct PcmData pcm_data) {
-    GLuint buffer = pcm_data.gpu_buffer;
-    char* left = (char*)pcm_data.ring_left;
-    char* right = (char*)pcm_data.ring_right;
-    int pcm_size = pcm_data.num_samples * sizeof(float);
-    int pcm_wrap_offset = pcm_data.offset * sizeof(float);
-    copy_ringbuffer_to_gpu(buffer, left, sizeof(int), pcm_size, pcm_wrap_offset);
-    copy_ringbuffer_to_gpu(buffer, right, sizeof(int) + pcm_size, pcm_size, pcm_wrap_offset);
-}
-
-void delete_pcm_data(struct PcmData pcm_data) {
-    glDeleteBuffers(1, &pcm_data.gpu_buffer);
-    free(pcm_data.ring_left);
-    free(pcm_data.ring_right);
-}
-
-/* PCM INPUT STREAM */
-
-struct ThreadData {
-    bool close_requested;
-    struct PcmData* pcm_data;
-};
-
-void* input_thread_function(void* data_raw) {
-    struct ThreadData* data = (struct ThreadData*)data_raw;
-    struct PcmData* pcm = data->pcm_data;
-
-    // Initialize input byte buffer.
-    int num_buffer_floats = 4096;
-    int buffer_size = num_buffer_floats * sizeof(float);
-    char* buffer_bytes = malloc(buffer_size + 1);
-    float* buffer_floats = (float*)buffer_bytes;
-    int buffer_offset = 0;
-
-    // Unblock stdin.
-    fcntl(STDIN_FILENO, F_SETFL, fcntl(STDIN_FILENO, F_GETFL) | O_NONBLOCK);
-
-    while(!data->close_requested) {
-        // Read as many as possible up to end of `buffer` from stdin.
-        int res = read(STDIN_FILENO, buffer_bytes + buffer_offset, buffer_size - buffer_offset);
-        if(res != -1) {
-            buffer_offset += res;
-        }
-
-        int samples_available = (buffer_offset / 8);
-        int samples_fitting = pcm->num_samples - pcm->offset;
-
-        for(int i = 0; i < MIN(samples_fitting, samples_available); i++) {
-            pcm->ring_left[pcm->offset + i] = buffer_floats[2 * i];
-            pcm->ring_right[pcm->offset + i] = buffer_floats[2 * i + 1];
-        }
-        for(int i = samples_fitting; i < samples_available; i++) {
-            pcm->ring_left[i] = buffer_floats[2 * i];
-            pcm->ring_right[i] = buffer_floats[2 * i + 1];
-        }
-
-        pcm->offset = (pcm->offset + samples_available) % pcm->num_samples;
-
-        // Move multiples of 2 floats over to ringbuffer and update position.
-        // Can't use the memcpy aproach since i need to split the channels.
-        /* float* dest = data->pcm_ring_buffer + data->pcm_offset; */
-        /* memcpy(dest, buffer_bytes, floats_moved * sizeof(float)); */
-        /* int floats_left = floats_available - floats_moved; */
-        /* memcpy(data->pcm_ring_buffer, buffer_bytes + floats_moved * sizeof(float), floats_left * sizeof(float)); */
-        /* data->pcm_offset = (data->pcm_offset + floats_available) % (data->pcm_samples * 2); */
-
-        // Move rest of bytes to beginning of buffer.
-        int bytes_processed = 2 * samples_available * sizeof(float);
-        int bytes_left = buffer_offset - bytes_processed;
-        memcpy(buffer_bytes, buffer_bytes + bytes_processed, bytes_left);
-        buffer_offset = bytes_left;
-    }
-
-    free(buffer_bytes);
-
-    return NULL;
-}
-
-struct InputStream {
-    pthread_t thread;
-    struct ThreadData* thread_data;
-};
-
-struct InputStream create_input_stream(struct PcmData* pcm_data) {
-    struct InputStream input_stream;
-    input_stream.thread_data = malloc(sizeof(struct ThreadData));
-
-    input_stream.thread_data->close_requested = false;
-    input_stream.thread_data->pcm_data = pcm_data;
-
-    int failure = pthread_create(&input_stream.thread, NULL, input_thread_function, (void*)input_stream.thread_data);
-    if(failure) {
-        fprintf(stderr, "Failed to pthread_create\n");
-        exit(1);
-    }
-
-    return input_stream;
-}
-
-void delete_input_stream(struct InputStream input_stream) {
-    input_stream.thread_data->close_requested = true;
-    pthread_join(input_stream.thread, NULL);
-    free(input_stream.thread_data);
-}
-
 /* DFT DATA */
 
 struct DftData {
@@ -398,7 +152,7 @@ struct DftData create_dft_data(int dft_size) {
 
     glGenBuffers(1, &dft_data.gpu_buffer);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, dft_data.gpu_buffer);
-    int gpu_buffer_size = sizeof(int) + 2 * dft_size * sizeof(float);
+    int gpu_buffer_size = 2 * sizeof(int) + 2 * dft_size * sizeof(float);
     glBufferData(GL_SHADER_STORAGE_BUFFER, gpu_buffer_size, NULL, GL_DYNAMIC_DRAW);
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(int), &dft_size);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, dft_data.gpu_buffer);
@@ -409,12 +163,8 @@ struct DftData create_dft_data(int dft_size) {
 
 #define PI 3.1415
 
-void compute_and_copy_dft_data_to_gpu(struct PcmData pcm_data, struct DftData dft_data) {
-    int floats_to_start = MIN(pcm_data.offset, dft_data.size);
-    int floats_from_end = dft_data.size - floats_to_start;
-    memcpy(dft_data.in, pcm_data.ring_left + pcm_data.num_samples - floats_from_end, floats_from_end * sizeof(float));
-    float* second_half = pcm_data.ring_left + pcm_data.offset - floats_to_start;
-    memcpy(dft_data.in + floats_from_end, second_half, floats_to_start * sizeof(float));
+void compute_and_copy_dft_data_to_gpu(Pcm pcm, struct DftData dft_data) {
+    copy_pcm_mono_to_buffer(dft_data.in, pcm, dft_data.size);
 
     // Multiply witn Hamming window.
     for(int i = 0; i < dft_data.size; i++) {
@@ -422,13 +172,30 @@ void compute_and_copy_dft_data_to_gpu(struct PcmData pcm_data, struct DftData df
     }
     fftwf_execute(dft_data.plan);
 
+    float max_value = 0.0;
+    int max_index = 0;
+
+    for(int i=0; i<dft_data.size / 2 + 1; i++) {
+        float re = dft_data.out[i];
+        float im = i > 0 && i < dft_data.size / 2 - 1 ? dft_data.out[i] : 0.0f;
+        float amp_2 = re * re + im * im;
+        if (amp_2 > max_value) {
+            max_value = amp_2;
+            max_index = i;
+        }
+    }
+
+    int dominant_freq_period = dft_data.size / (max_index + 1);
+
     for(int i = 0; i < dft_data.size; i++) {
         dft_data.smoothed[i] = MAX(0.95 * dft_data.smoothed[i], dft_data.out[i]);
     }
 
+    copy_buffer_to_gpu(dft_data.gpu_buffer, (char*)&dominant_freq_period, sizeof(int), sizeof(int));
+    int buffer_offset = 2 * sizeof(int);
     int buffer_size = dft_data.size * sizeof(float);
-    copy_buffer_to_gpu(dft_data.gpu_buffer, (char*)dft_data.out, sizeof(int), buffer_size);
-    copy_buffer_to_gpu(dft_data.gpu_buffer, (char*)dft_data.smoothed, sizeof(int) + buffer_size, buffer_size);
+    copy_buffer_to_gpu(dft_data.gpu_buffer, (char*)dft_data.out, buffer_offset, buffer_size);
+    copy_buffer_to_gpu(dft_data.gpu_buffer, (char*)dft_data.smoothed, buffer_offset + buffer_size, buffer_size);
 }
 
 void delete_dft_data(struct DftData dft_data) {
@@ -485,27 +252,69 @@ void handle_events(struct UserContext* user_context) {
 int main(int argc, char* argv[]) {
     initialize_sdl();
     struct Window window = create_window();
-    struct Program program = create_program();
+    Program program = create_program("shader.vert", "shader.frag");
     struct PrimitivesBuffers primitives_buffers = create_primitives_buffers();
 
-    struct PcmData pcm_data = create_pcm_data(44100);
-    struct InputStream input_stream = create_input_stream(&pcm_data);
+    Pcm pcm = create_pcm(8 * 44100);
+    PcmStream pcm_stream = create_pcm_stream(pcm);
     struct DftData dft_data = create_dft_data(2048);
 
     struct UserContext user_context;
     user_context.quit_requested = false;
     user_context.offset = 0;
 
+    long program_check_cycles = 0;
+    long pcm_copy_cycles = 0;
+    long dft_process_cycles = 0;
+    long render_cycles = 0;
+    long event_handling_cycles = 0;
+    long cycles = 0;
+
     while(!user_context.quit_requested) {
-        copy_pcm_data_to_gpu(pcm_data);
-        compute_and_copy_dft_data_to_gpu(pcm_data, dft_data);
+        time_t t1 = clock();
+        if(program_source_modified(program)) {
+            reinstall_program_if_valid(program);
+        }
+        time_t t2 = clock();
+        program_check_cycles += t2 - t1;
+
+        copy_pcm_to_gpu(pcm);
+        time_t t3 = clock();
+        pcm_copy_cycles += t3 - t2;
+
+        compute_and_copy_dft_data_to_gpu(pcm, dft_data);
+        time_t t4 = clock();
+        dft_process_cycles += t4 - t3;
+
         update_display(window);
+        time_t t5 = clock();
+        render_cycles += t5 - t4;
+
         handle_events(&user_context);
+        time_t t6 = clock();
+        event_handling_cycles += t6 - t5;
+
+        cycles++;
+
+        if(cycles >= 100 && false) {
+            long cycle_clocks = cycles * CLOCKS_PER_SEC;
+            printf("Watchers:\t%.0fms\nPCM:\t%.0fms\nDFT:\t%.0fms\nRender:\t%.0fms\nEvents:\t%.0fms\n",
+                   1000.0 * program_check_cycles / cycle_clocks, 1000.0 * pcm_copy_cycles / cycle_clocks,
+                   1000.0 * dft_process_cycles / cycle_clocks, 1000.0 * render_cycles / cycle_clocks,
+                   1000.0 * event_handling_cycles / cycle_clocks);
+
+            program_check_cycles = 0;
+            pcm_copy_cycles = 0;
+            dft_process_cycles = 0;
+            render_cycles = 0;
+            event_handling_cycles = 0;
+            cycles = 0;
+        }
     }
 
     delete_dft_data(dft_data);
-    delete_input_stream(input_stream);
-    delete_pcm_data(pcm_data);
+    delete_pcm_stream(pcm_stream);
+    delete_pcm(pcm);
     delete_primitives_buffers(primitives_buffers);
     delete_program(program);
     delete_window(window);
@@ -513,3 +322,6 @@ int main(int argc, char* argv[]) {
 
     return 0;
 }
+
+// Inotify file watcher.
+/* https://www.thegeekstuff.com/2010/04/inotify-c-program-example/ */
