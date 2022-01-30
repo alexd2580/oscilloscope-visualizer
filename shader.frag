@@ -1,11 +1,25 @@
 #version 450
 
 out vec4 color;
-in vec2 pos;
+in vec2 uv;
 
-// layout(std430, binding = 0) buffer settings_buffer {
-//     int num_samples;
-// };
+layout(binding = 0) uniform view {
+    int width;
+    int height;
+
+    float _pad1;
+    float _pad2;
+
+    float fov;
+    float pitch;
+    float roll;
+    float yaw;
+
+    vec3 camera_origin;
+    vec3 camera_right;
+    vec3 camera_ahead;
+    vec3 camera_up;
+};
 
 layout(std430, binding = 2) buffer pcm_data {
     int pcm_samples;
@@ -41,18 +55,18 @@ layout(std430, binding = 3) buffer dft_data {
 /*     color = vec4(lum / 2, lum, 0, 0); */
 /* } */
 
-void main_xy() {
-    float volume = 1.0;
-    float min_dist_2 = 256 * 256;
-    for(int i = 0; i < 1024; i++) {
-        int ix = pcm_samples - 1024 + i;
-        vec2 pcm_pos = vec2(volume * pcm[ix], volume * pcm[ix + pcm_samples]);
-        vec2 diff = pos - pcm_pos;
-        min_dist_2 = min(min_dist_2, diff.x * diff.x + diff.y * diff.y);
-    }
-    float lum = 1.0 / (10000 * min_dist_2 + 1);
-    color = vec4(lum / 2, lum, 0, 0);
-}
+// void main_xy() {
+//     float volume = 1.0;
+//     float min_dist_2 = 256 * 256;
+//     for(int i = 0; i < 1024; i++) {
+//         int ix = pcm_samples - 1024 + i;
+//         vec2 pcm_pos = vec2(volume * pcm[ix], volume * pcm[ix + pcm_samples]);
+//         vec2 diff = pos - pcm_pos;
+//         min_dist_2 = min(min_dist_2, diff.x * diff.x + diff.y * diff.y);
+//     }
+//     float lum = 1.0 / (10000 * min_dist_2 + 1);
+//     color = vec4(lum / 2, lum, 0, 0);
+// }
 
 float distance_to_line(vec2 p1, vec2 p2, vec2 x) {
     vec2 dir = p2 - p1;
@@ -102,7 +116,7 @@ vec4 pcm_moving_blocks(vec2 p, int block_size, int gap_size) {
     }
 
     float lum = abs(value) > p.y ? 1.0 : 0.0;
-    return vec4(lum, lum / 2, 0, 0);
+    return vec4(lum, 0.0, lum, 0);
 
     // float dist = abs(pcm[sample_num] - 2 * p.y);
     // float lum = 1.0 / (1000 * dist * dist + 1);
@@ -144,15 +158,44 @@ vec4 pcm_line(vec2 p) {
 
     float dist = abs(pcm[sample_num] - 2 * p.y);
     float lum = 1.0 / (1000 * dist * dist + 1);
-    return vec4(lum, lum / 2, 0, 0);
+    return vec4(lum, 0.0, lum, 0);
 }
 
-vec2 scale(vec2 p, float x, float y) {
-    return vec2(p.x * x, p.y * y);
+vec2 scale(vec2 pos, float x, float y) {
+    return vec2(pos.x * x, pos.y * y);
 }
 
-vec2 translate(vec2 p, vec2 o) {
-    return p + o;
+vec2 translate(vec2 pos, vec2 o) {
+    return pos + o;
+}
+
+float sdf_sphere(vec3 pos, vec3 sphere, float radius) {
+    return length(pos - sphere) - radius;
+}
+
+float sdf_xz_plane(vec3 pos, float plane_y) {
+    return abs(pos.y - plane_y);
+}
+
+float sphere_radius = 0.0;
+
+float sdf_scene(vec3 pos) {
+    float d = min(sdf_sphere(pos, vec3(0, 1, 0), 20 * sphere_radius), sdf_xz_plane(pos, 0));
+
+    for (int i = 0; i< 50; i++) {
+        d = min(d, sdf_sphere(pos, vec3(-500, 0, -25 + float(i)), dft[2 + i + dft_size]));
+    }
+
+    return d;
+}
+
+vec3 normal_scene(vec3 pos) {
+    const float eps = 0.0001;
+    const vec2 h = vec2(eps, 0);
+    float dx = sdf_scene(pos + h.xyy) - sdf_scene(pos - h.xyy);
+    float dy = sdf_scene(pos + h.yxy) - sdf_scene(pos - h.yxy);
+    float dz = sdf_scene(pos + h.yyx) - sdf_scene(pos - h.yyx);
+    return normalize(vec3(dx, dy, dz));
 }
 
 void main() {
@@ -160,8 +203,34 @@ void main() {
     // color = vec4(float(sample_index % 44100) / 44100);
     // return;
     // color = dft_blocks() + pcm_line(pos) + pcm_line_2(pos) + pcm_line_32(pos);
-    color = pcm_still_blocks(pos, 500, 900);
+    // color = dft_blocks(pos, 500, 900);
+    // color = dft_blocks(pos) + pcm_moving_blocks(pos, 2000, 2000);
     // main_xy();
     //
     // color = visualization(transform(pos));
+
+    float aspect_ratio = 1920.0 / 1080.0;
+    vec3 ray_origin = camera_origin;
+    vec3 ray_dir = normalize(camera_ahead + uv.x * aspect_ratio * camera_right + uv.y * camera_up);
+
+    for (int i=0; i< 500; i++) {
+        sphere_radius += abs(pcm[pcm_samples - 1 - i]);
+    }
+    sphere_radius /= 1000.0;
+
+    for (int i=0; i< 50; i++) {
+        float distance_scene = sdf_scene(ray_origin);
+        if (distance_scene < 0.1) {
+            break;
+        }
+        ray_origin += distance_scene * ray_dir;
+    }
+
+    vec3 light_pos = vec3(sin(sample_index / 44100.0), 10, cos(sample_index / 44100.0));
+
+    vec4 c = vec4(1, 0, 1, 1);
+    float ambient = 0.2;
+    float diffuse = dot(normal_scene(ray_origin), normalize(light_pos - ray_origin));
+    float illumination = ambient + diffuse;
+    color = vec4(vec3(illumination), 1) * c;
 }

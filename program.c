@@ -78,6 +78,9 @@ Program create_program(char const* vertex_shader_path, char const* fragment_shad
 
     program->vertex_shader_path = vertex_shader_path;
     program->fragment_shader_path = fragment_shader_path;
+    program->program = (GLuint)-1;
+    program->vertex_shader = (GLuint)-1;
+    program->fragment_shader = (GLuint)-1;
 
     reinstall_program_if_valid(program);
 
