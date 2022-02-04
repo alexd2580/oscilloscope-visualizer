@@ -323,7 +323,7 @@ float sdf_scene(vec3 pos) {
     /* float sphere_bounds_2 = sdf_cube(at(pos, vec3(0, 100, -500)), 3 * 200 * 2); */
     /* float limited_spheres = sdf_intersect(sdf_intersect(sphere_bounds, spheres), sphere_bounds_2); */
 
-    return sdf_union_4(p, cubes, cy2, sdf_union(light, spheres));
+    return sdf_union_4(p, cubes, cy2, spheres);
 }
 
 vec3 normal_scene(vec3 pos) {
@@ -346,11 +346,40 @@ vec3 ray_march(vec3 ray_origin, vec3 ray_dir) {
     return vec3(1.0 / 0.0);
 }
 
+float ray_march_soft_shadow(vec3 ray_origin, vec3 ray_dir, float max_dist) {
+    float light = 1.0;
+    float dist = 0.0;
+    for (int i=0; i < num_steps; i++) {
+        float distance_scene = sdf_scene(ray_origin + dist * ray_dir);
+        if (distance_scene < 0.01) {
+            return 0.0;
+        }
+        light = min(light, 30 * distance_scene / dist);
+        dist += distance_scene;
+
+        if (dist > max_dist) {
+            return light;
+        }
+    }
+    return 0.0;
+}
+
 vec3 lighting(vec3 point) {
     if(dot(point, point) > 1e30) {
         return vec3(0);
     }
 
+    vec3 to_light = normalize(light_pos - point);
+    vec3 normal = normal_scene(point);
+    vec3 start = point + 0.1 * normal;
+    float max_dist = dot(light_pos - point, to_light);
+    float lightness = ray_march_soft_shadow(start, to_light, max_dist);
+    float illumination = lightness * max(dot(to_light, normal), 0);
+
+    float ambient = 0.2;
+    float diffuse = 0.8;
+
+    return vec3(ambient + diffuse * illumination);
 
     // vec3 c = vec3(1);
     // float ambient = 0.2;
@@ -359,23 +388,23 @@ vec3 lighting(vec3 point) {
     // float illumination = ambient + diffuse;
     // return vec3(illumination) * c;
 
-    vec3 normal = normal_scene(point);
-    vec3 nonlinear = generate_nonlinear(normal);
-    vec3 n1 = normalize(cross(normal, nonlinear));
-    vec3 n2 = cross(normal, n1);
-
-    vec3 accum = vec3(0.1);
-
-    for (int i1 = -1; i1 < 2; i1++) {
-        for (int i2 = -1; i2 < 2; i2++) {
-            vec3 p = point + 0.1 * i1 * n1 + 0.1 * i2 * n2;
-            vec3 light_to_point = normalize(p - light_pos);
-            vec3 light_bounce = ray_march(light_pos + 200000 * light_to_point, light_to_point);
-            if (length_vec3_squared(light_bounce - p) < .1) {
-                accum += 0.1111 * vec3(dot(normal, -light_to_point));
-            }
-        }
-    }
+    /* vec3 normal = normal_scene(point); */
+    /* vec3 nonlinear = generate_nonlinear(normal); */
+    /* vec3 n1 = normalize(cross(normal, nonlinear)); */
+    /* vec3 n2 = cross(normal, n1); */
+    /*  */
+    /* vec3 accum = vec3(0.1); */
+    /*  */
+    /* for (int i1 = -1; i1 < 2; i1++) { */
+    /*     for (int i2 = -1; i2 < 2; i2++) { */
+    /*         vec3 p = point + 0.1 * i1 * n1 + 0.1 * i2 * n2; */
+    /*         vec3 light_to_point = normalize(p - light_pos); */
+    /*         vec3 light_bounce = ray_march(light_pos + 200000 * light_to_point, light_to_point); */
+    /*         if (length_vec3_squared(light_bounce - p) < .1) { */
+    /*             accum += 0.1111 * vec3(dot(normal, -light_to_point)); */
+    /*         } */
+    /*     } */
+    /* } */
 
 
     /* for (int i = 0; i < 10; i++) { */
@@ -390,8 +419,7 @@ vec3 lighting(vec3 point) {
     /*         } */
     /*     } */
     /* } */
-
-    return accum;
+    /* return accum; */
 }
 
 void main() {
