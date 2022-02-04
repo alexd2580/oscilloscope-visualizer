@@ -66,8 +66,19 @@ void initialize_sdl() {
 struct Window_ {
     SDL_Window* window;
     SDL_GLContext context;
+
+    bool mouse_trapped;
 };
 typedef struct Window_* Window;
+
+void trap_mouse(Window window, bool trapped) {
+    window->mouse_trapped = trapped;
+    SDL_SetRelativeMouseMode(trapped ? SDL_ENABLE : SDL_DISABLE);
+    /* SDL_SetWindowGrab(window->window, SDL_TRUE); */
+    /* SDL_ShowCursor(SDL_DISABLE); */
+}
+
+bool is_mouse_trapped(Window window) { return window->mouse_trapped; }
 
 Window create_window() {
     Window window = (Window)malloc(sizeof(struct Window_));
@@ -83,9 +94,7 @@ Window create_window() {
     glDisable(GL_DEPTH_TEST);
     glClearColor(0.0, 0.0, 0.0, 0.0);
 
-    SDL_SetRelativeMouseMode(SDL_ENABLE);
-    /* SDL_SetWindowGrab(window->window, SDL_TRUE); */
-    /* SDL_ShowCursor(SDL_DISABLE); */
+    trap_mouse(window, false);
 
     return window;
 }
@@ -112,17 +121,11 @@ struct Vec3_ {
 };
 typedef struct Vec3_ Vec3;
 
-Vec3 vec3(float x, float y, float z) {
-    return (Vec3){.x = x, .y = y, .z = z, ._pad = 0};
-}
+Vec3 vec3(float x, float y, float z) { return (Vec3){.x = x, .y = y, .z = z, ._pad = 0}; }
 
-Vec3 scale(Vec3 vec, float factor) {
-    return vec3(vec.x * factor, vec.y * factor, vec.z * factor);
-}
+Vec3 scale(Vec3 vec, float factor) { return vec3(vec.x * factor, vec.y * factor, vec.z * factor); }
 
-Vec3 add(Vec3 a, Vec3 b) {
-    return vec3(a.x + b.x, a.y + b.y, a.z + b.z);
-}
+Vec3 add(Vec3 a, Vec3 b) { return vec3(a.x + b.x, a.y + b.y, a.z + b.z); }
 
 Vec3 add4(Vec3 a, Vec3 b, Vec3 c, Vec3 d) {
     return vec3(a.x + b.x + c.x + d.x, a.y + b.y + c.y + d.y, a.z + b.z + c.z + d.z);
@@ -133,14 +136,15 @@ struct View_ {
         int width;
         int height;
 
-        // Need to match vec4 alignment.
-        float _padding[2];
-
-        float fov;
+        float fovy;
         float pitch;
         float roll;
         float yaw;
 
+        int num_steps;
+
+        // Need to match vec4 alignment.
+        float _padding;
 
         Vec3 camera_origin;
 
@@ -184,8 +188,8 @@ View create_view(Window window) {
     SDL_GetWindowSize(window->window, &view->data.width, &view->data.height);
 
     // 45 degrees.
-    view->data.fov = 2.0 * PI / 8.0;
-
+    view->data.fovy = 2.0 * PI / 8.0;
+    view->data.num_steps = 50;
     view->data.camera_origin = vec3(-100, 1, 0);
 
     // RHR with middle finger pointing from monitor to user.
@@ -349,6 +353,60 @@ void delete_dft_data(DftData dft_data) {
     free(dft_data);
 }
 
+/* RANDOM */
+
+struct Random_ {
+    uint64_t* seed;
+
+    GLuint gpu_buffer;
+};
+typedef struct Random_* Random;
+
+static uint64_t splitmix_seed;
+uint64_t splitmix_next() {
+    uint64_t z = (splitmix_seed += 0x9e3779b97f4a7c15);
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111eb;
+    return z ^ (z >> 31);
+}
+
+void initialize_random(Random random, View view) {
+    int num_uints = 4 * view->data.width * view->data.height;
+    random->seed = malloc(num_uints * sizeof(uint64_t));
+    for(int i = 0; i < num_uints; i++) {
+        random->seed[i] = splitmix_next();
+    }
+
+    glGenBuffers(1, &random->gpu_buffer);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, random->gpu_buffer);
+    int gpu_buffer_size = num_uints * sizeof(float);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, gpu_buffer_size, NULL, GL_DYNAMIC_DRAW);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, gpu_buffer_size, random->seed);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, random->gpu_buffer);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+}
+
+Random create_random(View view) {
+    Random random = (Random)malloc(sizeof(struct Random_));
+    initialize_random(random, view);
+    return random;
+}
+
+void deinitialize_random(Random random) {
+    glDeleteBuffers(1, &random->gpu_buffer);
+    free(random->seed);
+}
+
+void reinitialize_random(Random random, View view) {
+    deinitialize_random(random);
+    initialize_random(random, view);
+}
+
+void delete_random(Random random) {
+    deinitialize_random(random);
+    free(random);
+}
+
 /* EVENT HANDLING AND OTHER */
 
 struct UserInput_ {
@@ -375,67 +433,65 @@ UserInput create_user_input(void) {
 
 void delete_user_input(UserInput user_input) { free(user_input); }
 
-void handle_events(UserInput user_input, View view) {
+void handle_events(Window window, UserInput user_input, View view, Random random) {
     SDL_Event event;
     while(SDL_PollEvent(&event)) {
+        SDL_Keycode key = event.key.keysym.sym;
         switch(event.type) {
         case SDL_QUIT:
             user_input->quit_requested = true;
             break;
         case SDL_KEYDOWN:
-            if (event.key.repeat) {
+            view->data.num_steps = MAX(1, view->data.num_steps + (key == SDLK_KP_PLUS) - (key == SDLK_KP_MINUS));
+
+            if(event.key.repeat) {
                 break;
             }
 
-            user_input->v_fb += event.key.keysym.sym == SDLK_w ? 1.0 : 0.0;
-            user_input->v_fb += event.key.keysym.sym == SDLK_s ? -1.0 : 0.0;
-            user_input->v_rl += event.key.keysym.sym == SDLK_d ? 1.0 : 0.0;
-            user_input->v_rl += event.key.keysym.sym == SDLK_a ? -1.0 : 0.0;
-            user_input->v_ud += event.key.keysym.sym == SDLK_SPACE ? 1.0 : 0.0;
-            user_input->v_ud += event.key.keysym.sym == SDLK_LSHIFT ? -1.0 : 0.0;
+            user_input->v_fb += key == SDLK_w ? 1.0 : 0.0;
+            user_input->v_fb += key == SDLK_s ? -1.0 : 0.0;
+            user_input->v_rl += key == SDLK_d ? 1.0 : 0.0;
+            user_input->v_rl += key == SDLK_a ? -1.0 : 0.0;
+            user_input->v_ud += key == SDLK_SPACE ? 1.0 : 0.0;
+            user_input->v_ud += key == SDLK_LSHIFT ? -1.0 : 0.0;
 
             break;
         case SDL_KEYUP:
-            if(event.key.keysym.sym == SDLK_ESCAPE) {
-                user_input->quit_requested = true;
+            user_input->quit_requested = key == SDLK_ESCAPE;
+            if(key == SDLK_l) {
+                trap_mouse(window, false);
             }
 
-            user_input->v_fb -= event.key.keysym.sym == SDLK_w ? 1.0 : 0.0;
-            user_input->v_fb -= event.key.keysym.sym == SDLK_s ? -1.0 : 0.0;
-            user_input->v_rl -= event.key.keysym.sym == SDLK_d ? 1.0 : 0.0;
-            user_input->v_rl -= event.key.keysym.sym == SDLK_a ? -1.0 : 0.0;
-            user_input->v_ud -= event.key.keysym.sym == SDLK_SPACE ? 1.0 : 0.0;
-            user_input->v_ud -= event.key.keysym.sym == SDLK_LSHIFT ? -1.0 : 0.0;
+            user_input->v_fb -= key == SDLK_w ? 1.0 : 0.0;
+            user_input->v_fb -= key == SDLK_s ? -1.0 : 0.0;
+            user_input->v_rl -= key == SDLK_d ? 1.0 : 0.0;
+            user_input->v_rl -= key == SDLK_a ? -1.0 : 0.0;
+            user_input->v_ud -= key == SDLK_SPACE ? 1.0 : 0.0;
+            user_input->v_ud -= key == SDLK_LSHIFT ? -1.0 : 0.0;
 
             break;
 
         case SDL_MOUSEMOTION:
-            rotate_camera(view, -event.motion.yrel / 2000.0, 0.0, -event.motion.xrel / 2000.0);
+            if(is_mouse_trapped(window)) {
+                rotate_camera(view, -event.motion.yrel / 2000.0, 0.0, -event.motion.xrel / 2000.0);
+            }
             break;
-        /* case SDL_MOUSEWHEEL: */
-        /*     user_context->offset = CLAMP(user_context->offset + event.wheel.y, 0, 900); */
-        /*     if(user_context->offset == 0) { */
-        /*         break; */
-        /*     } */
-        /*  */
-        /*     // Offset gives the distance between the x pointer and the y pointer. */
-        /*     // If the distance is 90 degrees (a quarter of a period) od a certain frequency, */
-        /*     // we get a circle, let's call that the resonating frequency. */
-        /*     // Given an initial signal sample rate, we can compute the HZ value. */
-        /*     int const signal_sample_rate = 44100; */
-        /*  */
-        /*     // The offset equals a quarter of a period, meaning that a period is 4 times offset. */
-        /*     int const period = 4 * user_context->offset; */
-        /*     int const resonating_frequency = signal_sample_rate / period; */
-        /*  */
-        /*     printf("Offset: %d Hz\n", resonating_frequency); */
-        /*  */
-        /*     break; */
+
+        case SDL_MOUSEWHEEL:
+            if(is_mouse_trapped(window)) {
+                view->data.fovy += (2 * PI / 360.0) * (event.wheel.y > 0 ? 1 : -1); // By one degree
+            }
+            break;
         case SDL_WINDOWEVENT:
             if(event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
                 view->data.width = event.window.data1;
                 view->data.height = event.window.data2;
+                reinitialize_random(random, view);
             }
+            break;
+
+        case SDL_MOUSEBUTTONDOWN:
+            trap_mouse(window, true);
             break;
         }
     }
@@ -457,6 +513,7 @@ int main(int argc, char* argv[]) {
     Pcm pcm = create_pcm(8 * 44100);
     PcmStream pcm_stream = create_pcm_stream(pcm);
     DftData dft_data = create_dft_data(2048);
+    Random random = create_random(view);
     UserInput user_input = create_user_input();
 
     long program_check_cycles = 0;
@@ -486,13 +543,13 @@ int main(int argc, char* argv[]) {
         time_t t5 = clock();
         render_cycles += t5 - t4;
 
-        handle_events(user_input, view);
+        handle_events(window, user_input, view, random);
         time_t t6 = clock();
         event_handling_cycles += t6 - t5;
 
         cycles++;
 
-        if(cycles >= 100 && false) {
+        if(cycles >= 100) {
             long cycle_clocks = cycles * CLOCKS_PER_SEC;
             printf("Watchers:\t%.0fms\nPCM:\t%.0fms\nDFT:\t%.0fms\nRender:\t%.0fms\nEvents:\t%.0fms\n",
                    1000.0 * program_check_cycles / cycle_clocks, 1000.0 * pcm_copy_cycles / cycle_clocks,
@@ -509,6 +566,7 @@ int main(int argc, char* argv[]) {
     }
 
     delete_user_input(user_input);
+    delete_random(random);
     delete_dft_data(dft_data);
     delete_pcm_stream(pcm_stream);
     delete_pcm(pcm);
