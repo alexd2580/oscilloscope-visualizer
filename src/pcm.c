@@ -2,22 +2,15 @@
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 #include <sys/stat.h>
 #include <sys/types.h>
 
-#define GL_GLEXT_PROTOTYPES
-
-#include <SDL2/SDL.h>
-#include <SDL2/SDL_opengl.h>
-
 #include "buffers.h"
 #include "pcm.h"
-
-#define MIN(a, b) ((a) < (b) ? (a) : (b))
-#define MAX(a, b) ((a) > (b) ? (a) : (b))
-#define CLAMP(x, l, u) MAX((l), MIN((x), (u)))
 
 struct Pcm_ {
     int num_samples;
@@ -43,13 +36,9 @@ Pcm create_pcm(int num_samples) {
         pcm->ring_right[i] = 0.0f;
     }
 
-    glGenBuffers(1, &pcm->gpu_buffer);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, pcm->gpu_buffer);
     int gpu_buffer_size = 3 * sizeof(int) + 2 * num_samples * sizeof(float);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, gpu_buffer_size, NULL, GL_DYNAMIC_DRAW);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(int), &num_samples);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, pcm->gpu_buffer);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    pcm->gpu_buffer = create_buffer(GL_SHADER_STORAGE_BUFFER, gpu_buffer_size, 2);
+    copy_buffer_to_gpu(pcm->gpu_buffer, (char*)&num_samples, 0, sizeof(int));
 
     return pcm;
 }
@@ -81,7 +70,7 @@ void copy_pcm_mono_to_buffer(float* dst, Pcm pcm, int num_floats) {
 }
 
 void delete_pcm(Pcm pcm) {
-    glDeleteBuffers(1, &pcm->gpu_buffer);
+    delete_buffer(pcm->gpu_buffer);
     free(pcm->ring_left);
     free(pcm->ring_right);
     free(pcm);

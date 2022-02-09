@@ -1,11 +1,20 @@
 #ifndef INCLUDE_BUFFERS_H
 #define INCLUDE_BUFFERS_H
 
-#define GL_GLEXT_PROTOTYPES
+// For reference, see:
+// https://blog.techlab-xe.net/wp-content/uploads/2013/12/fig1_uniform_buffer.png
 
-#include <SDL2/SDL_opengl.h>
+struct Buffer_ {
+    unsigned int target; // GLenum
+    unsigned int buffer; // GLuint
+};
+typedef struct Buffer_ Buffer;
 
-void copy_buffer_to_gpu(GLuint buffer, char* data, int buffer_offset, int size);
-void copy_ringbuffer_to_gpu(GLuint buffer, char* data, int buffer_offset, int size, int wrap_offset);
+Buffer create_uniform_buffer(int size, unsigned int index);
+Buffer create_storage_buffer(int size, unsigned int index);
+
+void copy_buffer_to_gpu(Buffer, void* data, int buffer_offset, int size);
+void copy_ringbuffer_to_gpu(Buffer, void* data, int buffer_offset, int size, int wrap_offset);
+void delete_buffer(Buffer);
 
 #endif

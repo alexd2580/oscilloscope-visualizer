@@ -24,6 +24,10 @@ layout(binding = 0) uniform view {
     vec3 camera_up;
 };
 
+layout(binding = 1) uniform clock {
+    float seconds;
+};
+
 layout(std430, binding = 2) buffer pcm_data {
     int pcm_samples;
     int sample_index;
@@ -329,9 +333,10 @@ float sdf_scene(vec3 pos) {
 vec3 normal_scene(vec3 pos) {
     const float eps = 0.1;
     const vec2 h = vec2(eps, 0);
-    float dx = sdf_scene(pos + h.xyy) - sdf_scene(pos - h.xyy);
-    float dy = sdf_scene(pos + h.yxy) - sdf_scene(pos - h.yxy);
-    float dz = sdf_scene(pos + h.yyx) - sdf_scene(pos - h.yyx);
+    float d_pos = sdf_scene(pos + h.xyy);
+    float dx = d_pos - sdf_scene(pos - h.xyy);
+    float dy = d_pos - sdf_scene(pos - h.yxy);
+    float dz = d_pos - sdf_scene(pos - h.yyx);
     return normalize(vec3(dx, dy, dz));
 }
 

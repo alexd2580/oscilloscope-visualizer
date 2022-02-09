@@ -1,0 +1,4 @@
+-Iinclude/
+-Weverything
+-Wno-padded
+-Wno-missing-prototypes
