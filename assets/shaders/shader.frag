@@ -296,8 +296,8 @@ vec3 repeat_pos_int(vec3 pos, vec3 size_repeat, vec3 num_repeat) {
 
 // Global.
 
-float s = 0.3 * sin(0.22 * sample_index / 44100.0);
-float c = 0.2 + 0.8 * (cos(0.096 * sample_index / 44100.0) + 1) / 2;
+float s = 0.1 * sin(0.22 * sample_index / 44100.0);
+float c = 0.6 + 0.4 * (cos(0.096 * sample_index / 44100.0) + 1) / 2;
 vec3 light_pos = 1e6 * (c * vec3(0, 1, 0) + s * vec3(1, 0, 1));
 
 float sdf_scene(vec3 pos) {
@@ -309,11 +309,11 @@ float sdf_scene(vec3 pos) {
     float cubes = sdf_union(cu1, cu2);
 
     vec3 repeated_cylinder_pos = repeat_pos_int(at(pos, vec3(0, 10, 0)), vec3(sin(0.1 * sample_index / 44100) * 66), vec3(0, 1, 0));
-    float cy1 = sdf_infinite_cylinder(repeated_cylinder_pos, vec3(1, 0, 0), 5.0);
-    float cy2 = sdf_infinite_cylinder(repeated_cylinder_pos, vec3(1, 0, 0), 2.5);
+    float cy1 = sdf_infinite_cylinder(repeated_cylinder_pos, vec3(sin(0.2 * sample_index / 44100.0), 0, cos(0.2 * sample_index / 44100.0)), 100.0);
+    float cy2 = sdf_infinite_cylinder(repeated_cylinder_pos, vec3(sin(0.2 * sample_index / 44100.0), 0, cos(0.2 * sample_index / 44100.0)), 50.0);
 
     /* vec3 repeated_sphere_pos = repeat_pos(at(pos, vec3(0, 100, 0)), vec3(200)); */
-    vec3 repeated_sphere_pos = repeat_pos_int(at(pos, vec3(0, 10, 0)), vec3(22), vec3(1, 3, 0));
+    vec3 repeated_sphere_pos = repeat_pos_int(at(pos, vec3(0, 10, 0)), vec3(22), vec3(10000000, 3, 1000000000));
     float s0 = sdf_sphere(repeated_sphere_pos, 10);
     float spheres = sdf_subtract(s0, cy1);
 
