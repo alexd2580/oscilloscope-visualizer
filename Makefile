@@ -7,7 +7,7 @@ LD  = gcc
 RM  = rm
 
 # Project settings
-PROJNAME         = $(patsubst `pwd`, '([^/]/)+', '')
+PROJNAME         = $(shell basename `pwd`)
 PROJNAME_DEBUG   = $(PROJNAME)_debug
 PROJNAME_RELEASE = $(PROJNAME)
 
@@ -31,14 +31,14 @@ WFLAGS  = -Wall -Wextra -pedantic -Wdouble-promotion -Wformat=2 -Winit-self \
 
 DEBUGFLAGS   = -g3 -O0
 RELEASEFLAGS = -g0 -O3
-CFLAGS       = -std=c11
+CFLAGS       = -std=c17 -lm
 
 # Includes
-INCLUDE_FLAGS = -Iinclude `sdl-config --cflags`
+INCLUDE_FLAGS = -Iinclude `sdl2-config --cflags`
 
 # Linker flags
 LIBRARIES   = m pthread fftw3f GL
-LIBRARY_FLAGS += $(foreach lib,$(LIBS),-l$(lib))  `sdl-config --libs`
+LIBRARY_FLAGS += $(foreach lib,$(LIBRARIES),-l$(lib)) `sdl2-config --libs`
 
 SRCFILES := $(wildcard src/*.c)
 OBJFILES := $(patsubst %.c,%.o,$(SRCFILES))
@@ -83,7 +83,7 @@ release/%.o: %.c Makefile
 	$(CC) $(CFLAGS) $(INCLUDE_FLAGS) $(WFLAGS) $(CWFLAGS) $(RELEASEFLAGS) -MMD -MP -c $< -o $@
 
 run:
-	parec --raw --format=float32le | ./release/$(PROJNAME_RELEASE)
+	parec --raw --format=float32le | ./$(PROJNAME_RELEASE)
 
 clean:
 	-@$(RM) -f $(wildcard $(OBJFILES_DEBUG) $(OBJFILES_RELEASE) $(DEPFILES_DEBUG) $(DEPFILES_RELEASE) $(PROJNAME_DEBUG) $(PROJNAME_RELEASE)) && \

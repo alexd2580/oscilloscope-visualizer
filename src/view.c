@@ -48,10 +48,23 @@ void copy_view_to_gpu(View view) {
     glViewport(0, 0, view->data.width, view->data.height);
 }
 
-View create_view(Window window) {
+void update_view_window_size(View view, struct WindowSize window_size) {
+    view->data.width = window_size.w;
+    view->data.height = window_size.h;
+}
+
+__attribute__((const)) int* mut_num_steps(View view) {
+    return &view->data.num_steps;
+}
+
+__attribute__((const)) float* mut_fovy(View view) {
+    return &view->data.fovy;
+}
+
+View create_view(struct WindowSize window_size) {
     View view = (View)malloc(sizeof(struct View_));
 
-    get_window_size(window, &view->data.width, &view->data.height);
+    update_view_window_size(view, window_size);
 
     // 45 degrees.
     view->data.fovy = 2.f * PI / 8.f;

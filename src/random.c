@@ -43,7 +43,7 @@ void deinitialize_random(Random random) {
     free(random->seed);
 }
 
-void reinitialize_random(Random random, struct WindowSize window_size) {
+void update_random_window_size(Random random, struct WindowSize window_size) {
     deinitialize_random(random);
     initialize_random(random, window_size);
 }

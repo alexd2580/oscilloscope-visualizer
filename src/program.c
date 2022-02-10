@@ -38,7 +38,7 @@ char* read_file(char const* path, int* size) {
         exit(1);
     }
 
-    long bufsize = ftell(fp);
+    int bufsize = (int)ftell(fp);
     if(bufsize == -1) {
         fprintf(stderr, "Failed to ftell\n");
         exit(1);
@@ -48,14 +48,14 @@ char* read_file(char const* path, int* size) {
         *size = bufsize;
     }
 
-    char* data = malloc(sizeof(char) * (bufsize + 1));
+    char* data = malloc(sizeof(char) * (size_t)(bufsize + 1));
 
     if(fseek(fp, 0L, SEEK_SET) != 0) {
         fprintf(stderr, "Failed to fseek\n");
         exit(1);
     }
 
-    fread(data, sizeof(char), bufsize, fp);
+    fread(data, sizeof(char), (size_t)bufsize, fp);
     if(ferror(fp) != 0) {
         fprintf(stderr, "Failed to fread\n");
         exit(1);
@@ -92,8 +92,9 @@ GLuint compile_shader(GLenum type, char const* source_path) {
 
     int source_len;
     char* source = read_file(source_path, &source_len);
+    char const* const_source = source;
 
-    glShaderSource(shader, 1, (const GLchar**)&source, &source_len);
+    glShaderSource(shader, 1, (GLchar const**)&const_source, &source_len);
     glCompileShader(shader);
 
     free(source);
@@ -101,14 +102,14 @@ GLuint compile_shader(GLenum type, char const* source_path) {
     GLint status;
     glGetShaderiv(shader, GL_COMPILE_STATUS, &status);
     if(status == GL_FALSE) {
-        size_t max_size = 10000;
-        GLchar* log = (GLchar*)malloc(max_size * sizeof(GLchar));
+        int max_size = 10000;
+        GLchar* log = (GLchar*)malloc((size_t)max_size * sizeof(GLchar));
         GLsizei length;
         glGetShaderInfoLog(shader, max_size, &length, log);
         fprintf(stderr, "shader compilation failed\n%.*s", length, log);
         free(log);
         glDeleteShader(shader);
-        return -1;
+        return (GLuint)-1;
     }
 
     return shader;
@@ -151,8 +152,8 @@ void reinstall_program_if_valid(Program program) {
     GLint status;
     glGetProgramiv(prgm, GL_LINK_STATUS, &status);
     if (status == GL_FALSE) {
-        size_t max_size = 10000;
-        GLchar* log = (GLchar*)malloc(max_size * sizeof(GLchar));
+        int max_size = 10000;
+        GLchar* log = (GLchar*)malloc((size_t)max_size * sizeof(GLchar));
         GLsizei length;
         glGetProgramInfoLog(prgm, max_size, &length, log);
         fprintf(stderr, "program linking failed\n%.*s", length, log);

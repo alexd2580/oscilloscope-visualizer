@@ -47,7 +47,7 @@ void trap_mouse(Window window, bool trapped) {
     /* SDL_ShowCursor(SDL_DISABLE); */
 }
 
-bool is_mouse_trapped(Window window) { return window->mouse_trapped; }
+__attribute__((pure)) bool is_mouse_trapped(Window window) { return window->mouse_trapped; }
 
 void delete_window(Window window) {
     SDL_GL_DeleteContext(window->context);
