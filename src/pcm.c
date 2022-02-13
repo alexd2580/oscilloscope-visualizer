@@ -24,7 +24,7 @@ struct Pcm_ {
     Buffer buffer;
 };
 
-Pcm create_pcm(int num_samples) {
+Pcm create_pcm(int num_samples, unsigned int index) {
     Pcm pcm = (struct Pcm_*)malloc(sizeof(struct Pcm_));
     pcm->num_samples = num_samples;
     pcm->sample_index = 0;
@@ -38,7 +38,7 @@ Pcm create_pcm(int num_samples) {
     }
 
     int gpu_buffer_size = 3 * isizeof(int) + 2 * num_samples * isizeof(float);
-    pcm->buffer = create_storage_buffer(gpu_buffer_size, 2);
+    pcm->buffer = create_storage_buffer(gpu_buffer_size, index);
     copy_buffer_to_gpu(pcm->buffer, &num_samples, 0, sizeof(int));
 
     return pcm;

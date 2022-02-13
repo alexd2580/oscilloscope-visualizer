@@ -4,7 +4,7 @@
 struct Pcm_;
 typedef struct Pcm_* Pcm;
 
-Pcm create_pcm(int num_samples);
+Pcm create_pcm(int num_samples, unsigned int index);
 void copy_pcm_to_gpu(Pcm pcm);
 void copy_pcm_mono_to_buffer(float* dst, Pcm pcm, int num_floats);
 void delete_pcm(Pcm pcm);

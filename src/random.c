@@ -9,6 +9,7 @@
 struct Random_ {
     uint64_t* seed;
 
+    unsigned int index;
     Buffer buffer;
 };
 
@@ -27,13 +28,14 @@ void initialize_random(Random random, struct WindowSize window_size) {
         random->seed[i] = splitmix_next();
     }
 
-    int gpu_buffer_size = num_uints * isizeof(float);
-    random->buffer = create_storage_buffer(gpu_buffer_size, 4);
+    int gpu_buffer_size = num_uints * isizeof(uint64_t);
+    random->buffer = create_storage_buffer(gpu_buffer_size, random->index);
     copy_buffer_to_gpu(random->buffer, random->seed, 0, gpu_buffer_size);
 }
 
-Random create_random(struct WindowSize window_size) {
+Random create_random(struct WindowSize window_size, unsigned int index) {
     Random random = (Random)malloc(sizeof(struct Random_));
+    random->index = index;
     initialize_random(random, window_size);
     return random;
 }

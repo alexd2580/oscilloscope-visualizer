@@ -21,7 +21,7 @@ struct DftData_ {
     Buffer buffer;
 };
 
-DftData create_dft_data(int dft_size) {
+DftData create_dft_data(int dft_size, unsigned int index) {
     assert(dft_size % 2 == 0);
     DftData dft_data = (DftData)malloc(sizeof(struct DftData_));
 
@@ -46,7 +46,7 @@ DftData create_dft_data(int dft_size) {
 
     int gpu_buffer_size = 2 * isizeof(int) + 2 * dft_size * isizeof(float);
 
-    dft_data->buffer = create_storage_buffer(gpu_buffer_size, 3);
+    dft_data->buffer = create_storage_buffer(gpu_buffer_size, index);
     copy_buffer_to_gpu(dft_data->buffer, (char*)&dft_size, 0, sizeof(int));
 
     return dft_data;

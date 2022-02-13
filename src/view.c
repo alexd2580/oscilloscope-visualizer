@@ -61,7 +61,7 @@ __attribute__((const)) float* mut_fovy(View view) {
     return &view->data.fovy;
 }
 
-View create_view(struct WindowSize window_size) {
+View create_view(struct WindowSize window_size, unsigned int index) {
     View view = (View)malloc(sizeof(struct View_));
 
     update_view_window_size(view, window_size);
@@ -69,7 +69,7 @@ View create_view(struct WindowSize window_size) {
     // 45 degrees.
     view->data.fovy = 2.f * PI / 8.f;
     view->data.num_steps = 50;
-    view->data.camera_origin = vec3(-100, 1, 0);
+    view->data.camera_origin = vec3(0, 10, 10);
 
     // RHR with middle finger pointing from monitor to user.
     // These vectors will only be set before transfer to GPU.
@@ -77,7 +77,7 @@ View create_view(struct WindowSize window_size) {
     /* view->data.camera_up = vec3(0, 1, 0); */
     /* view->data.camera_ahead = vec3(0, 0, -1); */
 
-    view->buffer = create_uniform_buffer(sizeof(struct ViewData), 0);
+    view->buffer = create_uniform_buffer(sizeof(struct ViewData), index);
 
     copy_view_to_gpu(view);
 

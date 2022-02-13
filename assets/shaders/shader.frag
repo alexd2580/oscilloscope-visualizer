@@ -24,11 +24,15 @@ layout(binding = 0) uniform view {
     vec3 camera_up;
 };
 
-layout(binding = 1) uniform clock {
+layout(binding = 1) uniform timer {
     float seconds;
 };
 
-layout(std430, binding = 2) buffer pcm_data {
+layout(std430, binding = 2) buffer random {
+    uint64_t random_seed[];
+};
+
+layout(std430, binding = 3) buffer pcm_data {
     int pcm_samples;
     int sample_index;
     // `pcm` contains `2 * pcm_samples` entries.
@@ -36,7 +40,7 @@ layout(std430, binding = 2) buffer pcm_data {
     float pcm[];
 };
 
-layout(std430, binding = 3) buffer dft_data {
+layout(std430, binding = 4) buffer dft_data {
     int dft_size;
     int dominant_frequency_period;
     // `dft` contains `dft_size` entries.
@@ -49,8 +53,25 @@ layout(std430, binding = 3) buffer dft_data {
     float dft[];
 };
 
-layout(std430, binding = 4) buffer random {
-    uint64_t random_seed[4];
+struct Primitive {
+    int type;
+    int i1;
+    int i2;
+    int i3;
+    float f1;
+    float f2;
+    float f3;
+    float f4;
+};
+
+layout(std430, binding = 5) buffer scene {
+    int num_max_primitives;
+    int num_primitives;
+    int root_node;
+
+    int _padding;
+
+    Primitive primitives[];
 };
 
 float length_vec2_squared(vec2 v) {
@@ -65,12 +86,16 @@ uint64_t rotl(const uint64_t x, int k) {
    return (x << k) | (x >> (64 - k));
 }
 
+#define UINT64_T_MAX (~uint64_t(0))
+#define UINT32_T_MAX (~uint32_t(0))
+
 uint64_t random_uint64(void) {
     int x = int((uv.x / 2.0 + 0.5) * width);
     int y = int((uv.y / 2.0 + 0.5) * height);
+
     int base_index = 4 * (y * width + x);
 
-    const uint64_t result = rotl(random_seed[base_index + 0] + random_seed[base_index + 3], 23) + random_seed[0];
+    const uint64_t result = rotl(random_seed[base_index + 0] + random_seed[base_index + 3], 23) + random_seed[base_index + 0];
     const uint64_t t = random_seed[base_index + 1] << 17;
 
     random_seed[base_index + 2] ^= random_seed[base_index + 0];
@@ -84,9 +109,6 @@ uint64_t random_uint64(void) {
 
     return result;
 }
-
-#define UINT64_T_MAX (~uint64_t(0))
-#define UINT32_T_MAX (~uint32_t(0))
 
 float random_float(void) {
     return float(random_uint64()) / float(UINT64_T_MAX);
@@ -119,125 +141,6 @@ vec3 random_cosine_vec3(vec3 normal) {
     }
 }
 
-/* void main() { */
-/*     float volume = 1.0; */
-/*  */
-/*     float min_dist_2 = 256 * 256; */
-/*     for(int i = 0; i < 1024 - offset; i++) { */
-/*         float x_dist_2 = (pos.x - volume * pcm[i].x) * (pos.x - volume * pcm[i].x); */
-/*         float y_dist_2 = (pos.y - volume * pcm[i + offset].y) * (pos.y - volume * pcm[i + offset].y); */
-/*         min_dist_2 = min(min_dist_2, x_dist_2 + y_dist_2); */
-/*     } */
-/*     float lum = 1.0 / (10000 * min_dist_2 + 1); */
-/*     color = vec4(lum / 2, lum, 0, 0); */
-/* } */
-
-// void main_xy() {
-//     float volume = 1.0;
-//     float min_dist_2 = 256 * 256;
-//     for(int i = 0; i < 1024; i++) {
-//         int ix = pcm_samples - 1024 + i;
-//         vec2 pcm_pos = vec2(volume * pcm[ix], volume * pcm[ix + pcm_samples]);
-//         vec2 diff = pos - pcm_pos;
-//         min_dist_2 = min(min_dist_2, diff.x * diff.x + diff.y * diff.y);
-//     }
-//     float lum = 1.0 / (10000 * min_dist_2 + 1);
-//     color = vec4(lum / 2, lum, 0, 0);
-// }
-
-float distance_to_line(vec2 p1, vec2 p2, vec2 x) {
-    vec2 dir = p2 - p1;
-    vec2 normal = vec2(dir.y, -dir.x) / length(dir);
-    return abs(dot(normal, p1) - dot(normal, x));
-}
-
-vec2 dft_at(int index) {
-    return vec2(dft[index], index == 0 || index == (dft_size / 2) ? 0.0 : dft[dft_size - index]);
-}
-
-vec2 smooth_dft_at(int index) {
-    return vec2(dft[dft_size + index], index == 0 || index == (dft_size / 2) ? 0.0 : dft[dft_size + dft_size - index]);
-}
-
-vec4 dft_blocks(vec2 p) {
-    int data_size = dft_size / 2;
-
-    float max_x = log2(float(data_size));
-    float float_x = pow(2, max_x * p.x);
-    int index = int(round(float_x));
-
-    float y_raw = length(dft_at(index));
-    float y_smooth = length(smooth_dft_at(index));
-
-    if (p.y < y_raw / 256) {
-        return vec4(1, 0, 0, 0);
-    } else if (p.y < y_smooth / 256) {
-        return vec4(1, 0.5, 0, 0);
-    }
-    return vec4(0);
-}
-
-vec4 pcm_moving_blocks(vec2 p, int block_size, int gap_size) {
-    int window_size = block_size + gap_size;
-    int relative_sample_index = window_size + int((pcm_samples - window_size) * p.x);
-    int absolute_sample_index = sample_index - pcm_samples + relative_sample_index;
-    int block_start_offset = absolute_sample_index % window_size;
-    if (block_start_offset < gap_size) {
-        return vec4(0);
-    }
-    int local_sample_index = relative_sample_index - block_start_offset;
-
-    float value = 0;
-    for (int i=0; i < window_size; i++) {
-        value = max(abs(value), pcm[min(local_sample_index + i, pcm_samples - 1)]);
-    }
-
-    float lum = abs(value) > p.y ? 1.0 : 0.0;
-    return vec4(lum, 0.0, lum, 0);
-
-    // float dist = abs(pcm[sample_num] - 2 * p.y);
-    // float lum = 1.0 / (1000 * dist * dist + 1);
-    // return vec4(lum, lum / 2, 0, 0);
-}
-
-vec4 pcm_still_blocks(vec2 p, int block_size, int gap_size) {
-    int window_size = block_size + gap_size;
-    int relative_sample_index = int((pcm_samples - window_size) * p.x);
-    int block_start_offset = relative_sample_index % window_size;
-    if (block_start_offset < gap_size) {
-        return vec4(0);
-    }
-    int local_sample_index = relative_sample_index - block_start_offset;
-
-    float value = 0;
-    for (int i=0; i < window_size; i++) {
-        value = max(abs(value), pcm[min(local_sample_index + i, pcm_samples - 1)]);
-    }
-
-    float lum = abs(value) > p.y ? 1.0 : 0.0;
-    return vec4(lum, lum / 2, 0, 0);
-
-    // float dist = abs(pcm[sample_num] - 2 * p.y);
-    // float lum = 1.0 / (1000 * dist * dist + 1);
-    // return vec4(lum, lum / 2, 0, 0);
-}
-
-vec4 pcm_line_32(vec2 p) {
-    int sample_num = 199 * pcm_samples / 200 + int(pcm_samples / 200 * p.x);
-    // sample_num -= sample_index % dominant_frequency_period;
-
-    float dist = abs(pcm[sample_num] - 2.0 * p.y - 1.0);
-    float lum = 1.0 / (1000 * dist * dist + 1);
-    return vec4(lum, lum / 2, 0, 0);
-}
-vec4 pcm_line(vec2 p) {
-    int sample_num = int(pcm_samples * p.x);
-
-    float dist = abs(pcm[sample_num] - 2 * p.y);
-    float lum = 1.0 / (1000 * dist * dist + 1);
-    return vec4(lum, 0.0, lum, 0);
-}
-
 float maxcomp(vec3 vec) {
     return max(vec.x, max(vec.y, vec.z));
 }
@@ -253,12 +156,12 @@ float sdf_cube(vec3 pos, float side_len) {
     return length(max(to_corner, 0)) + min(maxcomp(to_corner), 0);
 }
 
-float sdf_infinite_cylinder(vec3 pos, vec3 direction, float radius) {
-    return length(pos - dot(pos, direction) * direction) - radius;
+float sdf_cylinder(vec3 pos, float radius) {
+    return length(pos.yz) - radius;
 }
 
-float sdf_plane(vec3 pos, vec3 normal, float offset) {
-    return abs(dot(pos, normal) - offset);
+float sdf_plane(vec3 pos, float offset) {
+    return pos.y - offset;
 }
 
 float sdf_subtract(float a, float b) {
@@ -300,40 +203,89 @@ vec3 repeat_pos_int(vec3 pos, vec3 size_repeat, vec3 num_repeat) {
 
 // Global.
 
-float s = 0.1 * sin(0.22 * sample_index / 44100.0);
-float c = 0.6 + 0.4 * (cos(0.096 * sample_index / 44100.0) + 1) / 2;
-vec3 light_pos = 1e6 * (c * vec3(0, 1, 0) + s * vec3(1, 0, 1));
+float s = sin(0.22 * seconds);
+float c = cos(0.096 * seconds);
+vec3 light_pos = vec3(0, 1e2, 0) + vec3(1e3 * c, 0, 0) + vec3(0, 0, 1e3 * s);
 
-float sdf_scene(vec3 pos) {
-    float p = sdf_plane(pos, vec3(0, 1, 0), 0);
+#define HIGHEST_POSITIVE_BIT (1 << 30)
 
-    float cu1 = sdf_cube(at(pos, vec3(0, 5, 20)), 5.0);
-    vec3 repeated_cube_pos = repeat_pos_int(at(pos, vec3(0, 20, 20)), vec3(5.5), vec3(2));
-    float cu2 = sdf_cube(repeated_cube_pos, 5.0);
-    float cubes = sdf_union(cu1, cu2);
+#define RAY_MARCH_STACK_SIZE 10
+float sdf_scene(vec3 start_pos) {
+    // Stack of nodes traversed.
+    // Loop ends when the stack underflows.
+    int node[RAY_MARCH_STACK_SIZE];
+    node[0] = root_node;
+    int node_index = 0;
 
-    vec3 repeated_cylinder_pos = repeat_pos_int(at(pos, vec3(0, 10, 0)), vec3(sin(0.1 * sample_index / 44100) * 66), vec3(0, 1, 0));
-    float cy1 = sdf_infinite_cylinder(repeated_cylinder_pos, vec3(sin(0.2 * sample_index / 44100.0), 0, cos(0.2 * sample_index / 44100.0)), 100.0);
-    float cy2 = sdf_infinite_cylinder(repeated_cylinder_pos, vec3(sin(0.2 * sample_index / 44100.0), 0, cos(0.2 * sample_index / 44100.0)), 50.0);
+    // Current position, pushed/ popped on transformation type primitives.
+    // upon exiting a tranformation node to the top.
+    vec3 pos[RAY_MARCH_STACK_SIZE];
+    pos[0] = start_pos;
+    int pos_index = 0;
 
-    /* vec3 repeated_sphere_pos = repeat_pos(at(pos, vec3(0, 100, 0)), vec3(200)); */
-    vec3 repeated_sphere_pos = repeat_pos_int(at(pos, vec3(0, 10, 0)), vec3(22), vec3(10000000, 3, 1000000000));
-    float s0 = sdf_sphere(repeated_sphere_pos, 10);
-    float spheres = sdf_subtract(s0, cy1);
+    // Stack of distances previously computed (reverse polish notation?).
+    float distance[RAY_MARCH_STACK_SIZE];
+    int next_distance_index = 0;
 
-    float light = sdf_sphere(at(pos, light_pos), 10000);
+    int iterations = 0;
+    while(node_index >= 0 && iterations < 20) {
+        iterations++;
 
-    /* float sphere_bounds = sdf_cube(at(pos, vec3(0, 100, 0)), 3 * 200 * (1 + cos(0.2 * sample_index / 44100.0))); */
-    /* float sphere_bounds_2 = sdf_cube(at(pos, vec3(0, 100, -500)), 3 * 200 * 2); */
-    /* float limited_spheres = sdf_intersect(sdf_intersect(sphere_bounds, spheres), sphere_bounds_2); */
+        int primitive_index = node[node_index--];
+        struct Primitive primitive = primitives[primitive_index & ~HIGHEST_POSITIVE_BIT];
+        switch(primitive.type | (primitive_index & HIGHEST_POSITIVE_BIT)) {
+            case 1: // PlaneType
+                distance[next_distance_index++] = sdf_plane(pos[pos_index], primitive.f1);
+                break;
+            case 2: // CubeType
+                distance[next_distance_index++] = sdf_cube(pos[pos_index], primitive.f1);
+                break;
+            case 3: // SphereType
+                distance[next_distance_index++] = sdf_sphere(pos[pos_index], primitive.f1);
+                break;
+            case 4: // CylinderType
+                distance[next_distance_index++] = sdf_cylinder(pos[pos_index], primitive.f1);
+                break;
+            case 5: // TranslationType
+                break;
+            case 6: // RotationType
+                break;
+            case 7: // ScalingType
+                break;
+            case 8: // RepetitionType
+                break;
+            case 1073741833: // (9 | HIGHEST_POSITIVE_BIT): // UnionType (children resolved)
+                distance[next_distance_index - 2] = sdf_union(distance[next_distance_index - 2], distance[next_distance_index - 1]);
+                next_distance_index -= 1;
+                break;
+            case 1073741834: // (10 | HIGHEST_POSITIVE_BIT): // IntersectionType (children resolved)
+                distance[next_distance_index - 2] = sdf_intersect(distance[next_distance_index - 2], distance[next_distance_index  - 1]);
+                next_distance_index -= 1;
+                break;
+            case 1073741835: // (11 | HIGHEST_POSITIVE_BIT): // ComplementType (children resolved)
+                distance[next_distance_index - 2] = sdf_subtract(distance[next_distance_index - 2], distance[next_distance_index - 1]);
+                next_distance_index -= 1;
+                break;
+            case 9: // UnionType
+            case 10: // IntersectionType
+            case 11: // ComplemenType
+                // Push the negated type onto the stack, followed by right child, then left child.
+                node[++node_index] = primitive_index | HIGHEST_POSITIVE_BIT;
+                node[++node_index] = primitive.i2;
+                node[++node_index] = primitive.i1;
+                break;
+            default:
+                break;
+        }
+    }
 
-    return sdf_union_4(p, cubes, cy2, spheres);
+    return distance[0];
 }
 
 vec3 normal_scene(vec3 pos) {
     const float eps = 0.1;
     const vec2 h = vec2(eps, 0);
-    float d_pos = sdf_scene(pos + h.xyy);
+    float d_pos = sdf_scene(pos);
     float dx = d_pos - sdf_scene(pos - h.xyy);
     float dy = d_pos - sdf_scene(pos - h.yxy);
     float dz = d_pos - sdf_scene(pos - h.yyx);
@@ -376,72 +328,23 @@ vec3 lighting(vec3 point) {
 
     vec3 to_light = normalize(light_pos - point);
     vec3 normal = normal_scene(point);
-    vec3 start = point + 0.1 * normal;
+    vec3 start = point + 1 * normal;
     float max_dist = dot(light_pos - point, to_light);
-    float lightness = ray_march_soft_shadow(start, to_light, max_dist);
-    float illumination = lightness * max(dot(to_light, normal), 0);
+    float light_visibility = 1.0 * ray_march_soft_shadow(start, to_light, max_dist);
+    float illumination = light_visibility * max(dot(to_light, normal), 0);
 
     float ambient = 0.2;
     float diffuse = 0.8;
 
     return vec3(ambient + diffuse * illumination);
-
-    // vec3 c = vec3(1);
-    // float ambient = 0.2;
-    // vec3 normal = normal_scene(point);
-    // float diffuse = dot(normal, normalize(light_pos - point));
-    // float illumination = ambient + diffuse;
-    // return vec3(illumination) * c;
-
-    /* vec3 normal = normal_scene(point); */
-    /* vec3 nonlinear = generate_nonlinear(normal); */
-    /* vec3 n1 = normalize(cross(normal, nonlinear)); */
-    /* vec3 n2 = cross(normal, n1); */
-    /*  */
-    /* vec3 accum = vec3(0.1); */
-    /*  */
-    /* for (int i1 = -1; i1 < 2; i1++) { */
-    /*     for (int i2 = -1; i2 < 2; i2++) { */
-    /*         vec3 p = point + 0.1 * i1 * n1 + 0.1 * i2 * n2; */
-    /*         vec3 light_to_point = normalize(p - light_pos); */
-    /*         vec3 light_bounce = ray_march(light_pos + 200000 * light_to_point, light_to_point); */
-    /*         if (length_vec3_squared(light_bounce - p) < .1) { */
-    /*             accum += 0.1111 * vec3(dot(normal, -light_to_point)); */
-    /*         } */
-    /*     } */
-    /* } */
-
-
-    /* for (int i = 0; i < 10; i++) { */
-    /*     vec3 normal = normal_scene(point); */
-    /*     vec3 random_ray = random_cosine_vec3(normal); */
-    /*     vec3 bounce = ray_march(point + 0.02 * normal, random_ray); */
-    /*     if (bounce.x < 10000000000.0) { */
-    /*         vec3 light_to_point = normalize(bounce - light_pos); */
-    /*         vec3 light_bounce = ray_march(light_pos, light_to_point); */
-    /*         if (length_vec3_squared(light_bounce - bounce) < 1) { */
-    /*             accum += vec3(0.1); */
-    /*         } */
-    /*     } */
-    /* } */
-    /* return accum; */
 }
 
 void main() {
-    // color = vec4(log2(dominant_frequency_period) / 20);
-    // color = vec4(float(sample_index % 44100) / 44100);
-    // return;
-    // color = dft_blocks() + pcm_line(pos) + pcm_line_2(pos) + pcm_line_32(pos);
-    // color = dft_blocks(pos, 500, 900);
-    // color = dft_blocks(pos) + pcm_moving_blocks(pos, 2000, 2000);
-    // main_xy();
-    //
-    // color = visualization(transform(pos));
-
     float aspect_ratio = 1920.0 / 1080.0;
     vec3 ray_origin = camera_origin;
     float fov_factor = tan(fovy / 2);
     vec3 ray_dir = normalize(camera_ahead + fov_factor * (uv.x * aspect_ratio * camera_right + uv.y * camera_up));
     vec3 ray_hit = ray_march(ray_origin, ray_dir);
+
     color = vec4(lighting(ray_hit), 1);
 }

@@ -10,6 +10,7 @@
 #include "program.h"
 #include "random.h"
 #include "render_quad.h"
+#include "scene.h"
 #include "sdl.h"
 #include "timer.h"
 #include "view.h"
@@ -128,12 +129,28 @@ int main(int argc, char* argv[]) {
     Window window = create_window(window_size);
     Program program = create_program("assets/shaders/shader.vert", "assets/shaders/shader.frag");
     RenderQuad render_quad = create_render_quad();
-    View view = create_view(window_size);
-    Pcm pcm = create_pcm(8 * 44100);
+    View view = create_view(window_size, 0);
+    Timer timer = create_timer(1);
+    Random random = create_random(window_size, 2);
+    Pcm pcm = create_pcm(8 * 44100, 3);
     PcmStream pcm_stream = create_pcm_stream(pcm);
-    DftData dft_data = create_dft_data(2048);
-    Random random = create_random(window_size);
+    DftData dft_data = create_dft_data(2048, 4);
+    Scene scene = create_scene(5);
     UserInput user_input = create_user_input();
+
+    int plane = add_primitive(scene, (struct Primitive){.type = PlaneType, .f1 = -10.f});
+
+    int sphere = add_primitive(scene, (struct Primitive){.type = SphereType, .f1 = 5.f});
+    int cylinder3 = add_primitive(scene, (struct Primitive){.type = CylinderType, .f1 = 3.f});
+    int cutout = add_primitive(scene, (struct Primitive){.type = ComplemenType, .i1 = sphere, .i2 = cylinder3});
+
+    int cylinder1 = add_primitive(scene, (struct Primitive){.type = CylinderType, .f1 = 1.f});
+    int shashlik = add_primitive(scene, (struct Primitive){.type = UnionType, .i1 = cutout, .i2 = cylinder1});
+
+    int union_ = add_primitive(scene, (struct Primitive){.type = UnionType, .i1 = plane, .i2 = shashlik});
+    set_root_primitive(scene, union_);
+
+    copy_scene_to_gpu(scene);
 
     long program_check_cycles = 0;
     long pcm_copy_cycles = 0;
@@ -164,6 +181,7 @@ int main(int argc, char* argv[]) {
         time_t t4 = clock();
         dft_process_cycles += t4 - t3;
 
+        copy_timer_to_gpu(timer);
         update_display(window);
         time_t t5 = clock();
         render_cycles += t5 - t4;
@@ -191,10 +209,12 @@ int main(int argc, char* argv[]) {
     }
 
     delete_user_input(user_input);
-    delete_random(random);
+    delete_scene(scene);
     delete_dft_data(dft_data);
     delete_pcm_stream(pcm_stream);
     delete_pcm(pcm);
+    delete_random(random);
+    delete_timer(timer);
     delete_view(view);
     delete_render_quad(render_quad);
     delete_program(program);

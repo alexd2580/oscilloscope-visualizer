@@ -6,7 +6,7 @@
 struct View_;
 typedef struct View_* View;
 
-View create_view(struct WindowSize window_size);
+View create_view(struct WindowSize window_size, unsigned int index);
 void copy_view_to_gpu(View view);
 void update_view_window_size(View view, struct WindowSize window_size);
 int* mut_num_steps(View view);

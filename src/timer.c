@@ -8,9 +8,9 @@ struct Timer_ {
     Buffer buffer;
 };
 
-Timer create_time(void) {
+Timer create_timer(unsigned int index) {
     Timer timer = (Timer)malloc(sizeof(struct Timer_));
-    timer->buffer = create_uniform_buffer(sizeof(float), 123);
+    timer->buffer = create_uniform_buffer(sizeof(float), index);
     return timer;
 }
 
