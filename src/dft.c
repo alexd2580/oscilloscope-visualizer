@@ -77,7 +77,7 @@ void compute_and_copy_dft_data_to_gpu(Pcm pcm, DftData dft_data) {
     int dominant_freq_period = dft_data->size / (max_index + 1);
 
     for(int i = 0; i < dft_data->size; i++) {
-        dft_data->smoothed[i] = MAX(0.95f * dft_data->smoothed[i], dft_data->out[i]);
+        dft_data->smoothed[i] = fmaxf(0.95f * dft_data->smoothed[i], dft_data->out[i]);
     }
 
     copy_buffer_to_gpu(dft_data->buffer, (char*)&dominant_freq_period, sizeof(int), sizeof(int));

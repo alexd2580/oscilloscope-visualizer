@@ -340,7 +340,7 @@ vec3 lighting(vec3 point) {
 }
 
 void main() {
-    float aspect_ratio = 1920.0 / 1080.0;
+    float aspect_ratio = float(width) / height;
     vec3 ray_origin = camera_origin;
     float fov_factor = tan(fovy / 2);
     vec3 ray_dir = normalize(camera_ahead + fov_factor * (uv.x * aspect_ratio * camera_right + uv.y * camera_up));

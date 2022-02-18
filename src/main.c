@@ -1,3 +1,4 @@
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -40,7 +41,7 @@ UserInput create_user_input(void) {
 
 void delete_user_input(UserInput user_input) { free(user_input); }
 
-void handle_events(float dt, Window window, UserInput user_input, View view, Random random) {
+void handle_events(float dt, Window window, Scene scene, UserInput user_input, View view, Random random) {
     SDL_Event event;
     while(SDL_PollEvent(&event)) {
         SDL_Keycode key = event.key.keysym.sym;
@@ -114,9 +115,14 @@ void handle_events(float dt, Window window, UserInput user_input, View view, Ran
     }
 
     // Movement speed.
-    float u_per_s = 100.0;
-    move_camera(view, dt * u_per_s * user_input->v_fb, dt * u_per_s * user_input->v_rl,
-                dt * u_per_s * user_input->v_ud);
+    float u_per_s = 50.0;
+    Vec3 position = get_position(view);
+    float closest_distance = distance_to_scene(scene, position) * 0.25f;
+
+    float u_per_frame = fminf(closest_distance, u_per_s * dt);
+    printf("%f\n", u_per_frame);
+
+    move_camera(view, u_per_frame * user_input->v_fb, u_per_frame * user_input->v_rl, u_per_frame * user_input->v_ud);
     copy_view_to_gpu(view);
 }
 
@@ -186,7 +192,7 @@ int main(int argc, char* argv[]) {
         time_t t5 = clock();
         render_cycles += t5 - t4;
 
-        handle_events(dt, window, user_input, view, random);
+        handle_events(dt, window, scene, user_input, view, random);
         time_t t6 = clock();
         event_handling_cycles += t6 - t5;
 

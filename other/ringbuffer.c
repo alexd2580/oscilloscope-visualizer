@@ -57,7 +57,7 @@ struct RingBuffer create_ring_buffer(int size) {
 }
 
 void memcpy_to_ringbuffer(struct RingBuffer* ring_buffer, void* data, int size) {
-    int write_size = MIN(size, ring_buffer->size);
+    int write_size = min(size, ring_buffer->size);
     int offset = (ring_buffer->offset + MAX(0, size - ring_buffer->size)) % ring_buffer->size;
     memcpy(ring_buffer->mmap_a + offset, data, write_size);
     ring_buffer->offset = (offset + write_size) % ring_buffer->size;

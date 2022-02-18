@@ -53,6 +53,10 @@ void update_view_window_size(View view, struct WindowSize window_size) {
     view->data.height = window_size.h;
 }
 
+__attribute__((const)) Vec3 get_position(View view) {
+    return view->data.camera_origin;
+}
+
 __attribute__((const)) int* mut_num_steps(View view) {
     return &view->data.num_steps;
 }
