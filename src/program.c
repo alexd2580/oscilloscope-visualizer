@@ -1,3 +1,4 @@
+// See https://antongerdelan.net/opengl/compute.html for reference.
 #include <stdbool.h>
 #include <stdio.h>
 #include <time.h> // TODO
@@ -14,14 +15,9 @@
 #include "program.h"
 
 struct Program_ {
-    char const* vertex_shader_path;
-    char const* fragment_shader_path;
-
-    time_t vertex_shader_mtime;
-    time_t fragment_shader_mtime;
-
-    GLuint vertex_shader;
-    GLuint fragment_shader;
+    char const* compute_shader_path;
+    time_t compute_shader_mtime;
+    GLuint compute_shader;
 
     GLuint program;
 };
@@ -73,14 +69,12 @@ time_t get_mtime(char const* path) {
     return attr.st_mtime;
 }
 
-Program create_program(char const* vertex_shader_path, char const* fragment_shader_path) {
+Program create_program(char const* compute_shader_path) {
     Program program = (struct Program_*)malloc(sizeof(struct Program_));
 
-    program->vertex_shader_path = vertex_shader_path;
-    program->fragment_shader_path = fragment_shader_path;
+    program->compute_shader_path = compute_shader_path;
+    program->compute_shader = (GLuint)-1;
     program->program = (GLuint)-1;
-    program->vertex_shader = (GLuint)-1;
-    program->fragment_shader = (GLuint)-1;
 
     reinstall_program_if_valid(program);
 
@@ -116,15 +110,12 @@ GLuint compile_shader(GLenum type, char const* source_path) {
 }
 
 bool program_source_modified(Program program) {
-      bool vertex_shader_updated = get_mtime(program->vertex_shader_path) > program->vertex_shader_mtime;
-      bool fragment_shader_updated = get_mtime(program->fragment_shader_path) > program->fragment_shader_mtime;
-      return vertex_shader_updated || fragment_shader_updated;
+      return get_mtime(program->compute_shader_path) > program->compute_shader_mtime;
 }
 
 void uninstall_program(Program program) {
     glDeleteProgram(program->program);
-    glDeleteShader(program->vertex_shader);
-    glDeleteShader(program->fragment_shader);
+    glDeleteShader(program->compute_shader);
 }
 
 void reinstall_program_if_valid(Program program) {
@@ -134,19 +125,15 @@ void reinstall_program_if_valid(Program program) {
     strftime(s, 1000, "%F %T", localized_time);
     printf("[%s] Compiling...\n", s);
 
-    program->vertex_shader_mtime = get_mtime(program->vertex_shader_path);
-    program->fragment_shader_mtime = get_mtime(program->fragment_shader_path);
+    program->compute_shader_mtime = get_mtime(program->compute_shader_path);
 
-    GLuint vs = compile_shader(GL_VERTEX_SHADER, program->vertex_shader_path);
-    GLuint fs = compile_shader(GL_FRAGMENT_SHADER, program->fragment_shader_path);
-    if (vs == (GLuint)-1 || fs == (GLuint)-1) {
+    GLuint compute_shader = compile_shader(GL_COMPUTE_SHADER, program->compute_shader_path);
+    if (compute_shader == (GLuint)-1) {
         return;
     }
 
     GLuint prgm = glCreateProgram();
-    glAttachShader(prgm, vs);
-    glAttachShader(prgm, fs);
-    glBindAttribLocation(prgm, 0, "position");
+    glAttachShader(prgm, compute_shader);
     glLinkProgram(prgm);
 
     GLint status;
@@ -160,8 +147,7 @@ void reinstall_program_if_valid(Program program) {
         free(log);
 
         glDeleteProgram(prgm);
-        glDeleteShader(vs);
-        glDeleteShader(fs);
+        glDeleteShader(compute_shader);
 
         return;
     }
@@ -170,11 +156,17 @@ void reinstall_program_if_valid(Program program) {
         uninstall_program(program);
     }
 
-    program->vertex_shader = vs;
-    program->fragment_shader = fs;
+    program->compute_shader = compute_shader;
     program->program = prgm;
 
     glUseProgram(prgm);
+}
+
+void run_program(Program program, GLuint w, GLuint h) {
+  glUseProgram(program->program);
+  glDispatchCompute(w, h, 1);
+  // Make sure writing to image has finished before read.
+  glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 }
 
 void delete_program(Program program) {

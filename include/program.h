@@ -9,13 +9,16 @@ struct Program_;
 typedef struct Program_* Program;
 
 // Initialize and install a program.
-Program create_program(char const* vertex_shader_path, char const* fragment_shader_path);
+Program create_program(char const* compute_shader_path);
 
 // Check if the program source has been modified since last read.
 bool program_source_modified(Program program);
 
 // Try to compile and install a program, keep the old one if something fails.
 void reinstall_program_if_valid(Program program);
+
+// Run the program and wait for completion.
+void run_program(Program program, GLuint w, GLuint h);
 
 // Deinitializa all program resources.
 void delete_program(Program program);

@@ -1,0 +1,150 @@
+#version 450
+
+#extension GL_NV_gpu_shader5 : enable
+#extension GL_ARB_gpu_shader_int64 : enable
+
+/* out vec4 color; */
+/* in vec2 uv; */
+
+/* uvec3 gl_NumWorkGroups; // global work group size we gave to glDispatchCompute() */
+/* uvec3 gl_WorkGroupSize; // local work group size we defined with layout */
+/* uvec3 gl_WorkGroupID; // position of current invocation in global work group */
+/* uvec3 gl_LocalInvocationID; // position of current invocation in local work group */
+/* uvec3 gl_GlobalInvocationID; // unique index of current invocation in global work group */
+/* uint gl_LocalInvocationIndex; // 1d index representation of gl_LocalInvocationID */
+
+// Define a work group size to be 1x1.
+layout(local_size_x = 1, local_size_y = 1) in;
+
+// Use the image2D sampler to address specific pixels directly.
+layout(rgba32f, binding = 0) uniform image2D next_frame;
+layout(rgba32f, binding = 1) uniform image2D prev_frame;
+
+layout(binding = 1) uniform timer {
+    float seconds;
+};
+
+layout(std430, binding = 3) buffer pcm_data {
+    int pcm_samples;
+    int sample_index;
+    // `pcm` contains `2 * pcm_samples` entries.
+    // These are the left channel values followed by the right channel values.
+    float pcm[];
+};
+
+layout(std430, binding = 4) buffer dft_data {
+    int dft_size;
+    int dominant_frequency_period;
+    // `dft` contains `dft_size` entries.
+    // These are the raw dft values followed by the smoothed values.
+    // Both raw and smooth sections follow the same pattern:
+    // First come `dft_size / 2 + 1` real values.
+    // Then come the `dft_size / 2` imaginary values in reverse, starting at
+    // `dft_size / 2 - 1` (for even sizes). There is no imaginary part for the
+    // first and last value.
+    float dft[];
+};
+
+/* float logistic_activation(float value, ) */
+
+mat2x2 rotate_matrix(float angle) {
+    return mat2x2(vec2(cos(angle), sin(angle)), vec2(-sin(angle), cos(angle)));
+}
+
+bool is_0_to_1(float x) {
+    return 0 <= x && x <= 1;
+}
+
+bool is_nan(float x) {
+    return x != x;
+}
+
+vec3 color(float x) {
+    return vec3(sin(x), sin(x + 3.1415 * 2.0 / 3.0), sin(x + 3.1415 * 4.0 / 3.0)); //  / 2.0 + 0.5;
+}
+
+vec3 orb(vec2 pixel_position, vec2 orb_position, float radius) {
+  vec2 delta = (pixel_position - orb_position);
+  float distance = sqrt(dot(delta, delta));
+  return clamp(vec3(1 - distance / radius), 0, 1);
+}
+
+vec3 read_previous_at(vec2 pos) {
+  ivec2 base = ivec2(floor(pos));
+  vec3 ll = imageLoad(prev_frame, base + ivec2(0)).rgb;
+  vec3 lu = imageLoad(prev_frame, base + ivec2(0, 1)).rgb;
+  vec3 ul = imageLoad(prev_frame, base + ivec2(1, 0)).rgb;
+  vec3 uu = imageLoad(prev_frame, base + ivec2(1)).rgb;
+
+  vec2 fract = fract(pos);
+
+  return fract.x * fract.y * uu + fract.x * (1 - fract.y) * ul + (1 - fract.x) * fract.y * lu + (1 - fract.x) * (1 - fract.y) * ll;
+}
+
+float bass() {
+    float sum = 0;
+    for (int i=0; i< 50; i++) {
+        sum += pcm[i];
+    }
+    return sum;
+}
+
+void basic() {
+  ivec2 ipixel_coords = ivec2(gl_GlobalInvocationID.xy);
+  vec2 pixel_coords = vec2(ipixel_coords);
+  ivec2 iimage_size = ivec2(gl_NumWorkGroups.xy);
+  vec2 image_size = vec2(iimage_size);
+  vec2 center = image_size / 2;
+
+  vec2 transformed_prev_pixel_coords = center + (rotate_matrix(0.01 * sin(seconds / 3.4)) * (pixel_coords - center) * (1 + sin(seconds / 4) / 100));
+
+  vec3 prev_pixel = read_previous_at(transformed_prev_pixel_coords);
+  vec2 orb_position = center + 300 * vec2(sin(seconds * 1.34), sin(seconds * 0.994));
+  float orb_radius = 20 + 10 * sin(5 * seconds) * clamp(bass(), 0.5, 100.0);
+  if (is_nan(orb_radius)) {
+      imageStore(next_frame, ipixel_coords, vec4(1, 0, 1, 1.0));
+      return;
+  }
+  vec3 next_pixel = orb(pixel_coords, orb_position, orb_radius)* color(seconds * 2);
+  vec3 pixel = 0.995 * prev_pixel + next_pixel;
+
+  imageStore(next_frame, ipixel_coords, vec4(clamp(pixel, 0, 1), 1.0));
+}
+
+void pcm_vis() {
+  ivec2 ipixel_coords = ivec2(gl_GlobalInvocationID.xy);
+  vec2 pixel_coords = vec2(ipixel_coords);
+  ivec2 iimage_size = ivec2(gl_NumWorkGroups.xy);
+  vec2 image_size = vec2(iimage_size);
+
+  float rel_x = pixel_coords.x / image_size.x;
+  float samples_on_screen = 40000;
+  float index_sample = pcm_samples - samples_on_screen + samples_on_screen * rel_x;
+
+  float rel_y = 2 * pixel_coords.y / image_size.y - 1;
+
+  vec3 color = abs(pcm[int(index_sample)] - rel_y) < 0.01 ? vec3(1) : vec3(0);
+
+  imageStore(next_frame, ipixel_coords, vec4(color, 1.0));
+}
+
+void dft_vis() {
+  ivec2 ipixel_coords = ivec2(gl_GlobalInvocationID.xy);
+  vec2 pixel_coords = vec2(ipixel_coords);
+  ivec2 iimage_size = ivec2(gl_NumWorkGroups.xy);
+  vec2 image_size = vec2(iimage_size);
+
+  float rel_x = pixel_coords.x / image_size.x;
+  int index_sample = int(rel_x * (dft_size / 2 + 1));
+
+  float rel_y = 2 * pixel_coords.y / image_size.y - 1;
+
+  vec3 color = abs(dft[index_sample] - rel_y) < 0.01 ? vec3(1) : vec3(0);
+
+  imageStore(next_frame, ipixel_coords, vec4(color, 1.0));
+}
+
+void main() {
+    dft_vis();
+    /* basic(); */
+}
