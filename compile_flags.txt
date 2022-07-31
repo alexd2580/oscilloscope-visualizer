@@ -2,3 +2,4 @@
 -Weverything
 -Wno-padded
 -Wno-missing-prototypes
+-Wno-declaration-after-statement

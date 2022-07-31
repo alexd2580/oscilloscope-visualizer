@@ -11,11 +11,12 @@
 #include "buffers.h"
 #include "defines.h"
 #include "dft.h"
-#include "peak_analysis.h"
 #include "pcm.h"
+#include "peak_analysis.h"
 #include "program.h"
 #include "random.h"
 #include "sdl.h"
+#include "textures.h"
 #include "timer.h"
 #include "window.h"
 
@@ -34,7 +35,7 @@ UserInput create_user_input(void) {
 
 void delete_user_input(UserInput user_input) { free(user_input); }
 
-void handle_events(UserInput user_input, Random random) {
+void handle_events(UserInput user_input, Random random, Textures textures, struct Size* size) {
     SDL_Event event;
     while(SDL_PollEvent(&event)) {
         switch(event.type) {
@@ -48,12 +49,10 @@ void handle_events(UserInput user_input, Random random) {
 
         case SDL_WINDOWEVENT:
             if(event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
-                struct WindowSize new_window_size = {
-                    .w = event.window.data1,
-                    .h = event.window.data2,
-                };
-                // TODO: Update window size in window.
-                update_random_window_size(random, new_window_size);
+                *size = (struct Size){.w = event.window.data1, .h = event.window.data2};
+
+                update_random_window_size(random, *size);
+                update_textures_window_size(textures, *size);
             }
             break;
 
@@ -63,57 +62,23 @@ void handle_events(UserInput user_input, Random random) {
     }
 }
 
-void create_textures(GLuint textures[2], struct WindowSize window_size) {
-    glGenTextures(2, textures);
-
-    for(int i = 0; i < 2; i++) {
-        glBindTexture(GL_TEXTURE_2D, textures[i]);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, window_size.w, window_size.h, 0, GL_RGBA, GL_FLOAT, NULL);
-    }
-    glBindTexture(GL_TEXTURE_2D, 0);
-}
-
-void swap_and_bind_textures(GLuint textures[2]) {
-    GLuint tmp = textures[0];
-    textures[0] = textures[1];
-    textures[1] = tmp;
-
-    glBindImageTexture(0, textures[0], 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
-    glBindImageTexture(1, textures[1], 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA32F);
-}
-
 int main(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
 
     create_sdl();
 
-    /* struct WindowSize window_size = {.w = 800, .h = 800}; */
-    struct WindowSize window_size = {.w = 2560, .h = 1440};
-
-    Window window = create_window(window_size);
-
-    GLuint framebuffer;
-    glGenFramebuffers(1, &framebuffer);
-
-    GLuint textures[2];
-    create_textures(textures, window_size);
-
+    struct Size size = {.w = 800, .h = 800};
+    Window window = create_window(size);
+    Textures textures = create_textures(size);
     Program program = create_program("assets/shaders/basic.comp");
     Timer timer = create_timer(1);
-    Random random = create_random(window_size, 2);
+    Random random = create_random(size, 2);
     Pcm pcm = create_pcm(8 * 44100, 3);
     PcmStream pcm_stream = create_pcm_stream(pcm);
-    DftData dft_data = create_dft_data(4096, 4);
-    PeakAnalysis peak_analysis = create_peak_analysis(4096, 5);
+    DftData dft_data = create_dft_data(2048, 4);
+    PeakAnalysis peak_analysis = create_peak_analysis(2048, 5);
     UserInput user_input = create_user_input();
-
-    GLint w = (GLint)window_size.w;
-    GLint h = (GLint)window_size.h;
 
     while(!user_input->quit_requested) {
         // Recompile shader?
@@ -130,20 +95,13 @@ int main(int argc, char* argv[]) {
         // Render and display.
         // Prepare for next frame.
         swap_and_bind_textures(textures);
-        // Render the next frame to textures[0].
-        run_program(program, (GLuint)w, (GLuint)h);
-        // Attach the rendered texture to a framebuffer.
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer);
-        glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, textures[0], 0);
-        // Blit the framebuffer to the output framebuffer and flip window.
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-        // Clearing technically not necessary because we recompute (blit) the entire frame each time.
-        // glClear(GL_COLOR_BUFFER_BIT);
-        glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
-        update_display(window);
+        // Render the next frame to the back texture.
+        run_program(program, (GLuint)size.w, (GLuint)size.h);
+
+        display_texture(window, get_back_texture(textures), size);
 
         // Events.
-        handle_events(user_input, random);
+        handle_events(user_input, random, textures, &size);
     }
 
     delete_user_input(user_input);
@@ -154,6 +112,7 @@ int main(int argc, char* argv[]) {
     delete_random(random);
     delete_timer(timer);
     delete_program(program);
+    delete_textures(textures);
     delete_window(window);
     delete_sdl();
 

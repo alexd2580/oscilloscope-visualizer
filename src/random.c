@@ -4,7 +4,7 @@
 #include "buffers.h"
 #include "defines.h"
 #include "random.h"
-#include "window.h"
+#include "size.h"
 
 struct Random_ {
     uint64_t* seed;
@@ -21,8 +21,8 @@ uint64_t splitmix_next(void) {
     return z ^ (z >> 31);
 }
 
-void initialize_random(Random random, struct WindowSize window_size) {
-    int num_uints = 4 * window_size.w * window_size.h;
+void initialize_random(Random random, struct Size size) {
+    int num_uints = 4 * size.w * size.h;
     random->seed = malloc((unsigned int)num_uints * sizeof(uint64_t));
     for(int i = 0; i < num_uints; i++) {
         random->seed[i] = splitmix_next();
@@ -33,10 +33,10 @@ void initialize_random(Random random, struct WindowSize window_size) {
     copy_buffer_to_gpu(random->buffer, random->seed, 0, gpu_buffer_size);
 }
 
-Random create_random(struct WindowSize window_size, unsigned int index) {
+Random create_random(struct Size size, unsigned int index) {
     Random random = (Random)malloc(sizeof(struct Random_));
     random->index = index;
-    initialize_random(random, window_size);
+    initialize_random(random, size);
     return random;
 }
 
@@ -45,9 +45,9 @@ void deinitialize_random(Random random) {
     free(random->seed);
 }
 
-void update_random_window_size(Random random, struct WindowSize window_size) {
+void update_random_window_size(Random random, struct Size size) {
     deinitialize_random(random);
-    initialize_random(random, window_size);
+    initialize_random(random, size);
 }
 
 void delete_random(Random random) {

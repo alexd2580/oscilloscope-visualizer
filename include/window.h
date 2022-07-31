@@ -3,17 +3,16 @@
 
 #include <stdbool.h>
 
+#include <SDL2/SDL_opengl.h>
+
+#include "size.h"
+
 struct Window_;
 typedef struct Window_* Window;
 
-struct WindowSize {
-    int w;
-    int h;
-};
-
-Window create_window(struct WindowSize window_size);
-void update_display(Window window);
-struct WindowSize get_window_size(Window window);
+Window create_window(struct Size size);
+void display_texture(Window window, GLuint texture, struct Size size);
+struct Size get_window_size(Window window);
 void delete_window(Window window);
 
 #endif
