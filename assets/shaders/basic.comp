@@ -24,6 +24,10 @@ layout(binding = 1) uniform timer {
     float seconds;
 };
 
+layout(std430, binding = 2) buffer random {
+    uint64_t random_seed[];
+};
+
 layout(std430, binding = 3) buffer pcm_data {
     int pcm_samples;
     int sample_index;
@@ -34,18 +38,50 @@ layout(std430, binding = 3) buffer pcm_data {
 
 layout(std430, binding = 4) buffer dft_data {
     int dft_size;
-    int dominant_frequency_period;
     // `dft` contains `dft_size` entries.
-    // These are the raw dft values followed by the smoothed values.
     // Both raw and smooth sections follow the same pattern:
     // First come `dft_size / 2 + 1` real values.
-    // Then come the `dft_size / 2` imaginary values in reverse, starting at
+    // Then come the `dft_size / 2 - 1` imaginary values in reverse, starting at
     // `dft_size / 2 - 1` (for even sizes). There is no imaginary part for the
     // first and last value.
     float dft[];
 };
 
-/* float logistic_activation(float value, ) */
+layout(std430, binding = 5) buffer peak_data {
+    float peaks[];
+};
+
+uint64_t rotl(const uint64_t x, int k) {
+   return (x << k) | (x >> (64 - k));
+}
+
+#define UINT64_T_MAX (~uint64_t(0))
+#define UINT32_T_MAX (~uint32_t(0))
+
+uint64_t random_uint64(void) {
+    int x = int(gl_GlobalInvocationID.x);
+    int y = int(gl_GlobalInvocationID.y);
+
+    int base_index = 4 * (y * int(gl_NumWorkGroups.x) + x);
+
+    const uint64_t result = rotl(random_seed[base_index + 0] + random_seed[base_index + 3], 23) + random_seed[base_index + 0];
+    const uint64_t t = random_seed[base_index + 1] << 17;
+
+    random_seed[base_index + 2] ^= random_seed[base_index + 0];
+    random_seed[base_index + 3] ^= random_seed[base_index + 1];
+    random_seed[base_index + 1] ^= random_seed[base_index + 2];
+    random_seed[base_index + 0] ^= random_seed[base_index + 3];
+
+    random_seed[base_index + 2] ^= t;
+
+    random_seed[base_index + 3] = rotl(random_seed[base_index + 3], 45);
+
+    return result;
+}
+
+float random_float(void) {
+    return float(random_uint64()) / float(UINT64_T_MAX);
+}
 
 mat2x2 rotate_matrix(float angle) {
     return mat2x2(vec2(cos(angle), sin(angle)), vec2(-sin(angle), cos(angle)));
@@ -81,12 +117,12 @@ vec3 read_previous_at(vec2 pos) {
   return fract.x * fract.y * uu + fract.x * (1 - fract.y) * ul + (1 - fract.x) * fract.y * lu + (1 - fract.x) * (1 - fract.y) * ll;
 }
 
-float bass() {
-    float sum = 0;
-    for (int i=0; i< 50; i++) {
-        sum += pcm[i];
-    }
-    return sum;
+vec2 dft_at(int index) {
+    return vec2(dft[index], index == 0 || index == (dft_size / 2) ? 0.0 : dft[dft_size - index]);
+}
+
+float noize(float x) {
+    return random_float() < x ? random_float() : 0.0;
 }
 
 void basic() {
@@ -96,16 +132,36 @@ void basic() {
   vec2 image_size = vec2(iimage_size);
   vec2 center = image_size / 2;
 
-  vec2 transformed_prev_pixel_coords = center + (rotate_matrix(0.01 * sin(seconds / 3.4)) * (pixel_coords - center) * (1 + sin(seconds / 4) / 100));
+  vec2 transformed_prev_pixel_coords = center + (rotate_matrix(0.01 * sin(seconds / 3.4)) * (pixel_coords - center) * (1 + sin(seconds / 4) / 100)) + 5 * sin(seconds / 4.239) * vec2(sin(seconds / 6.1), sin(seconds / 5.7212));
 
   vec3 prev_pixel = read_previous_at(transformed_prev_pixel_coords);
-  vec2 orb_position = center + 300 * vec2(sin(seconds * 1.34), sin(seconds * 0.994));
-  float orb_radius = 20 + 10 * sin(5 * seconds) * clamp(bass(), 0.5, 100.0);
-  if (is_nan(orb_radius)) {
-      imageStore(next_frame, ipixel_coords, vec4(1, 0, 1, 1.0));
-      return;
+
+  /* vec2 orb_position = center + 300 * vec2( */
+  /*   sin(seconds * 1.34), */
+  /*   sin(seconds * 0.994) */
+  /* ); */
+
+  int total_size = dft_size / 2 + 1;
+
+  /* 10 -> 110 hz */
+  vec3 next_pixel = vec3(0);
+  for(int i=1; i < 1000; i*=2) {
+      vec2 orb_position = center + 600 * vec2(
+        sin((peaks[i] + dft[i]) / 300.0),
+        sin((peaks[i + 1] + dft[i+1]) / 300.0)
+      );
+
+      float orb_radius = max(3, min(length(dft_at(i)), 200) + 5 * sin(5 * seconds));
+      next_pixel += orb(pixel_coords, orb_position, orb_radius) * color(peaks[i+2] / 400);
   }
-  vec3 next_pixel = orb(pixel_coords, orb_position, orb_radius)* color(seconds * 2);
+
+  float high_sum = 0;
+  for(int i=total_size / 2; i < total_size; i+=100) {
+      high_sum += length(dft_at(i));
+  }
+  next_pixel += noize(0.0001 * high_sum * high_sum) * color(seconds * 0.1413);
+
+
   vec3 pixel = 0.995 * prev_pixel + next_pixel;
 
   imageStore(next_frame, ipixel_coords, vec4(clamp(pixel, 0, 1), 1.0));
@@ -129,22 +185,42 @@ void pcm_vis() {
 }
 
 void dft_vis() {
-  ivec2 ipixel_coords = ivec2(gl_GlobalInvocationID.xy);
-  vec2 pixel_coords = vec2(ipixel_coords);
-  ivec2 iimage_size = ivec2(gl_NumWorkGroups.xy);
-  vec2 image_size = vec2(iimage_size);
+  vec2 pixel_coords = vec2(gl_GlobalInvocationID.xy);
+  vec2 image_size = vec2(gl_NumWorkGroups.xy);
 
   float rel_x = pixel_coords.x / image_size.x;
-  int index_sample = int(rel_x * (dft_size / 2 + 1));
+  float rel_y = pixel_coords.y / image_size.y;
 
-  float rel_y = 2 * pixel_coords.y / image_size.y - 1;
+  int data_size = (dft_size / 2);
+  // For linear
+  /* // float float_x = rel_x * data_size; */
+  // For logarithmic
+  float max_x = log2(float(data_size));
+  float float_x = pow(2, max_x * rel_x);
 
-  vec3 color = abs(dft[index_sample] - rel_y) < 0.01 ? vec3(1) : vec3(0);
+  int index_a = int(floor(float_x));
+  int index_b = int(ceil(float_x));
 
-  imageStore(next_frame, ipixel_coords, vec4(color, 1.0));
+  float y_a = length(dft_at(index_a));
+  float y_b = length(dft_at(index_b));
+
+  vec3 color = vec3(0, 1, 0);
+  if (peaks[index_a] == -1) {
+      color = vec3(0, 0, 1);
+  } else if (peaks[index_a] == 1) {
+      color = vec3(1, 0, 0);
+  }
+
+  float mix_ab = fract(float_x);
+  float dft_y = mix(y_a, y_b, mix_ab);
+
+  float lum = rel_y < dft_y / 256 ? 1.0 : 0.0;
+  vec4 pixel = vec4(lum * color, 0);
+
+  imageStore(next_frame, ivec2(gl_GlobalInvocationID.xy), pixel);
 }
 
 void main() {
-    dft_vis();
-    /* basic(); */
+    /* dft_vis(); */
+    basic();
 }

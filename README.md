@@ -1,6 +1,34 @@
-![](mushroom.png)
+# Funny Stuff With Audio!
 
-# [OBSOLETE] Setting up listenable pulse sink.
+```bash
+# Compiling
+make
+# Running
+make run
+```
+
+For example an XY-oscilloscope tied to the left/right channels of the audio (on some old commit).
+
+![](media/mushroom.png)
+
+Or a music visualizer.
+
+![](media/A.png)
+![](media/B.png)
+![](media/C.webm)
+
+There's also a commit with a "working" ray marcher...
+
+# Visualizer
+
+## Inspired by
+
+https://nestimmersion.ca/nestdrop.php
+https://github.com/projectM-visualizer/projectm
+
+# Actual oscilloscope stuff
+
+## [OBSOLETE] Setting up listenable pulse sink.
 
 ```
 # Find currently active default output.
@@ -16,28 +44,8 @@ pactl load-module module-combine-sink \
   sink_properties=device.description="Record-and-Play"
 ```
 
-# Compiling shader-oscilloscope
 
-```
-gcc -std=c11 sdl_oscilloscope.c `sdl2-config --libs --cflags` -lGL -Wall
-```
-
-# Running
-
-```
-# Listen to this new sink.
-# You'll need to set apps to actually write to this sink.
-# The output is binary `--format`. `float32le` works for me.
-# `u8` is fine too, but has much less resolution.
-# parec --raw --format=float32le -d record-n-play.monitor | ./a.out
-
-# The default arch config of PA includes monitor sources, which is
-# exactly what we need for this. You can select the source for parec
-# in the pulseaudio `Recording` tab.
-# parec --raw --format=float32le | ./a.out
-```
-
-# Audacity
+## Audacity
 
 The project contains an audacity project for a demo, just
 load it up and hit run-in-loop.
@@ -47,7 +55,7 @@ To "run" this script you need to select a new, preferably empty (will be
 overwritten) audio track (mono?) and hit "Tools->Open Nyquist Prompt". You'll
 get a LISP input window where you can put that code.
 
-# Inspired by
+## Inspired by
 
 https://www.youtube.com/watch?v=qnL40CbuodU
 

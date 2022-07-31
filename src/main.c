@@ -11,6 +11,7 @@
 #include "buffers.h"
 #include "defines.h"
 #include "dft.h"
+#include "peak_analysis.h"
 #include "pcm.h"
 #include "program.h"
 #include "random.h"
@@ -91,8 +92,8 @@ int main(int argc, char* argv[]) {
 
     create_sdl();
 
-    struct WindowSize window_size = {.w = 800, .h = 800};
-    /* struct WindowSize window_size = {.w = 1920, .h = 1080}; */
+    /* struct WindowSize window_size = {.w = 800, .h = 800}; */
+    struct WindowSize window_size = {.w = 2560, .h = 1440};
 
     Window window = create_window(window_size);
 
@@ -107,51 +108,33 @@ int main(int argc, char* argv[]) {
     Random random = create_random(window_size, 2);
     Pcm pcm = create_pcm(8 * 44100, 3);
     PcmStream pcm_stream = create_pcm_stream(pcm);
-    DftData dft_data = create_dft_data(2048, 4);
+    DftData dft_data = create_dft_data(4096, 4);
+    PeakAnalysis peak_analysis = create_peak_analysis(4096, 5);
     UserInput user_input = create_user_input();
 
-    long program_check_cycles = 0;
-    long pcm_copy_cycles = 0;
-    long dft_process_cycles = 0;
-    long render_cycles = 0;
-    long event_handling_cycles = 0;
-    long cycles = 0;
-
-    time_t time_last_iter = clock();
+    GLint w = (GLint)window_size.w;
+    GLint h = (GLint)window_size.h;
 
     while(!user_input->quit_requested) {
-        time_t time_this_iter = clock();
-        float dt = (float)(time_this_iter - time_last_iter) / CLOCKS_PER_SEC;
-        time_last_iter = time_this_iter;
-
-        time_t t1 = clock();
+        // Recompile shader?
         if(program_source_modified(program)) {
             reinstall_program_if_valid(program);
         }
-        time_t t2 = clock();
-        program_check_cycles += t2 - t1;
 
-        copy_pcm_to_gpu(pcm);
-        time_t t3 = clock();
-        pcm_copy_cycles += t3 - t2;
-
-        compute_and_copy_dft_data_to_gpu(pcm, dft_data);
-        time_t t4 = clock();
-        dft_process_cycles += t4 - t3;
+        // Copy data.
         copy_timer_to_gpu(timer);
+        copy_pcm_to_gpu(pcm);
+        compute_and_copy_dft_data_to_gpu(pcm, dft_data);
+        compute_and_copy_peak_analysis_to_gpu(dft_data, peak_analysis);
 
+        // Render and display.
         // Prepare for next frame.
         swap_and_bind_textures(textures);
-
         // Render the next frame to textures[0].
-        GLint w = (GLint)window_size.w;
-        GLint h = (GLint)window_size.h;
         run_program(program, (GLuint)w, (GLuint)h);
-
         // Attach the rendered texture to a framebuffer.
         glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer);
         glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, textures[0], 0);
-
         // Blit the framebuffer to the output framebuffer and flip window.
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
         // Clearing technically not necessary because we recompute (blit) the entire frame each time.
@@ -159,32 +142,12 @@ int main(int argc, char* argv[]) {
         glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
         update_display(window);
 
-        time_t t5 = clock();
-        render_cycles += t5 - t4;
-
+        // Events.
         handle_events(user_input, random);
-        time_t t6 = clock();
-        event_handling_cycles += t6 - t5;
-
-        cycles++;
-
-        if(cycles >= 100 && false) {
-            long cycle_clocks = cycles * CLOCKS_PER_SEC;
-            printf("Watchers:\t%ldms\nPCM:\t%ldms\nDFT:\t%ldms\nRender:\t%ldms\nEvents:\t%ldms\n",
-                   1000 * program_check_cycles / cycle_clocks, 1000 * pcm_copy_cycles / cycle_clocks,
-                   1000 * dft_process_cycles / cycle_clocks, 1000 * render_cycles / cycle_clocks,
-                   1000 * event_handling_cycles / cycle_clocks);
-
-            program_check_cycles = 0;
-            pcm_copy_cycles = 0;
-            dft_process_cycles = 0;
-            render_cycles = 0;
-            event_handling_cycles = 0;
-            cycles = 0;
-        }
     }
 
     delete_user_input(user_input);
+    delete_peak_analysis(peak_analysis);
     delete_dft_data(dft_data);
     delete_pcm_stream(pcm_stream);
     delete_pcm(pcm);
