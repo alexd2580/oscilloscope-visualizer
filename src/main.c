@@ -12,7 +12,7 @@
 #include "defines.h"
 #include "dft.h"
 #include "pcm.h"
-#include "peak_analysis.h"
+#include "analysis.h"
 #include "program.h"
 #include "random.h"
 #include "sdl.h"
@@ -76,8 +76,8 @@ int main(int argc, char* argv[]) {
     Random random = create_random(size, 2);
     Pcm pcm = create_pcm(8 * 44100, 3);
     PcmStream pcm_stream = create_pcm_stream(pcm);
-    DftData dft_data = create_dft_data(2048, 4);
-    PeakAnalysis peak_analysis = create_peak_analysis(2048, 5);
+    DftData dft_data = create_dft_data(4096, 4);
+    Analysis analysis = create_analysis(pcm, dft_data, 5);
     UserInput user_input = create_user_input();
 
     while(!user_input->quit_requested) {
@@ -90,7 +90,7 @@ int main(int argc, char* argv[]) {
         copy_timer_to_gpu(timer);
         copy_pcm_to_gpu(pcm);
         compute_and_copy_dft_data_to_gpu(pcm, dft_data);
-        compute_and_copy_peak_analysis_to_gpu(dft_data, peak_analysis);
+        compute_and_copy_analysis_to_gpu(dft_data, analysis);
 
         // Render and display.
         // Prepare for next frame.
@@ -105,7 +105,7 @@ int main(int argc, char* argv[]) {
     }
 
     delete_user_input(user_input);
-    delete_peak_analysis(peak_analysis);
+    delete_analysis(analysis);
     delete_dft_data(dft_data);
     delete_pcm_stream(pcm_stream);
     delete_pcm(pcm);

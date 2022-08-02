@@ -44,9 +44,7 @@ Textures create_textures(struct Size size) {
     return textures;
 }
 
-struct Size get_texture_size(Textures textures) {
-    return textures->size;
-}
+__attribute__((pure)) struct Size get_texture_size(Textures textures) { return textures->size; }
 
 void deinitialize_textures(Textures textures) {
     glDeleteTextures(1, &textures->front);
@@ -73,6 +71,4 @@ void swap_and_bind_textures(Textures textures) {
     glBindImageTexture(1, textures->front, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA32F);
 }
 
-GLuint get_back_texture(Textures textures) {
-    return textures->back;
-}
+__attribute__((pure)) GLuint get_back_texture(Textures textures) { return textures->back; }

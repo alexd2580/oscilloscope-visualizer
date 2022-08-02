@@ -5,7 +5,7 @@
 
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
-#define CLAMP(x, l, u) fmaxf((l), fminf((x), (u)))
+#define CLAMP(x, l, u) MAX((l), MIN((x), (u)))
 
 #define COMPILE_TIME_ASSERT(e) extern char ct_assert2[(e) - 1]
 

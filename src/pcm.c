@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include<assert.h>
 
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -44,6 +45,12 @@ Pcm create_pcm(int num_samples, unsigned int index) {
     return pcm;
 }
 
+__attribute__((const)) int sample_rate_of_pcm(Pcm pcm) {
+    (void)pcm;
+    // I just assume 44100???
+    return 44100;
+}
+
 void copy_pcm_to_gpu(Pcm pcm) {
     int sample_index = pcm->sample_index;
     int offset = pcm->offset;
@@ -64,11 +71,17 @@ void copy_pcm_mono_to_buffer(float* dst, Pcm pcm, int num_floats) {
 
     int floats_to_start = MIN(offset, num_floats);
     int floats_from_end = num_floats - floats_to_start;
-    size_t bytes_from_end = (size_t)floats_from_end * sizeof(float);
-    memcpy(dst, pcm->ring_left + pcm->num_samples - floats_from_end, bytes_from_end);
+    assert(floats_to_start + floats_from_end == num_floats);
+
+    int num_samples = pcm->num_samples;
+    bool modulo_index_matches = (num_samples + offset - num_floats) % num_samples == num_samples - floats_from_end;
+    assert(modulo_index_matches || floats_from_end == 0);
+
+    float* first_half = pcm->ring_left + pcm->num_samples - floats_from_end;
+    memcpy(dst, first_half, (size_t)floats_from_end * sizeof(float));
+
     float* second_half = pcm->ring_left + offset - floats_to_start;
-    size_t bytes_to_start = (size_t)floats_to_start * sizeof(float);
-    memcpy(dst + floats_from_end, second_half, bytes_to_start);
+    memcpy(dst + floats_from_end, second_half, (size_t)floats_to_start * sizeof(float));
 }
 
 void delete_pcm(Pcm pcm) {
@@ -83,6 +96,8 @@ struct ThreadData {
     Pcm pcm;
 };
 
+#include<math.h>
+
 void* input_stream_function(void* data_raw) {
     struct ThreadData* data = (struct ThreadData*)data_raw;
     Pcm pcm = data->pcm;
@@ -90,6 +105,7 @@ void* input_stream_function(void* data_raw) {
     // Initialize input byte buffer.
     int num_buffer_floats = 4096;
     int buffer_size = num_buffer_floats * isizeof(float);
+    // 1 extra char to use with `read`.
     float* buffer_floats = malloc((size_t)buffer_size + 1);
     char* buffer_bytes = (char*)buffer_floats;
     int buffer_offset = 0;
@@ -104,20 +120,25 @@ void* input_stream_function(void* data_raw) {
             buffer_offset += res;
         }
 
-        int samples_available = (buffer_offset / 8);
+        int samples_available = buffer_offset / 8; // 4 bytes per float. 2 floats per sample.
         int samples_fitting = pcm->num_samples - pcm->offset;
 
-        for(int i = 0; i < MIN(samples_fitting, samples_available); i++) {
+        int before_wrap = MIN(samples_fitting, samples_available);
+        int after_wrap = samples_available - samples_fitting;
+
+        for(int i = 0; i < before_wrap; i++) {
             pcm->ring_left[pcm->offset + i] = buffer_floats[2 * i];
             pcm->ring_right[pcm->offset + i] = buffer_floats[2 * i + 1];
         }
-        for(int i = samples_fitting; i < samples_available; i++) {
-            pcm->ring_left[i] = buffer_floats[2 * i];
-            pcm->ring_right[i] = buffer_floats[2 * i + 1];
+        for(int i = 0; i < after_wrap; i++) {
+            pcm->ring_left[i] = buffer_floats[2 * (before_wrap + i)];
+            pcm->ring_right[i] = buffer_floats[2 * (before_wrap + i) + 1];
         }
 
         pcm->sample_index += samples_available;
         pcm->offset = (pcm->offset + samples_available) % pcm->num_samples;
+
+        assert(pcm->offset == pcm->sample_index % pcm->num_samples);
 
         // Move multiples of 2 floats over to ringbuffer and update position.
         // Can't use the memcpy aproach since i need to split the channels.
@@ -130,7 +151,8 @@ void* input_stream_function(void* data_raw) {
         // Move rest of bytes to beginning of buffer.
         int bytes_processed = 2 * samples_available * isizeof(float);
         int bytes_left = buffer_offset - bytes_processed;
-        memcpy(buffer_bytes, buffer_bytes + bytes_processed, (size_t)bytes_left);
+        // Regions may overlap!
+        memmove(buffer_bytes, buffer_bytes + bytes_processed, (size_t)bytes_left);
         buffer_offset = bytes_left;
     }
 

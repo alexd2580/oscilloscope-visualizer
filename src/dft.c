@@ -46,11 +46,11 @@ DftData create_dft_data(int dft_size, unsigned int index) {
     return dft_data;
 }
 
-int dft_size(DftData dft_data) { return dft_data->size / 2 + 1; }
+__attribute__((pure)) int size_of_dft(DftData dft_data) { return dft_data->size; }
 
-float dft_at(DftData dft_data, int index) {
+__attribute__((pure)) float dft_at(DftData dft_data, int index) {
     bool first_or_last = index == 0 || index == dft_data->size / 2;
-    float second = first_or_last ? dft_data->out[dft_data->size - index] : 0.0;
+    float second = first_or_last ? 0.0f : dft_data->out[dft_data->size - index];
     return sqrtf(powf(dft_data->out[index], 2.0) + powf(second, 2));
 }
 

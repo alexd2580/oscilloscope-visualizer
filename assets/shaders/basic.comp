@@ -20,13 +20,9 @@ layout(local_size_x = 1, local_size_y = 1) in;
 layout(rgba32f, binding = 0) uniform image2D next_frame;
 layout(rgba32f, binding = 1) uniform image2D prev_frame;
 
-layout(binding = 1) uniform timer {
-    float seconds;
-};
+layout(binding = 1) uniform timer { float seconds; };
 
-layout(std430, binding = 2) buffer random {
-    uint64_t random_seed[];
-};
+layout(std430, binding = 2) buffer random { uint64_t random_seed[]; };
 
 layout(std430, binding = 3) buffer pcm_data {
     int pcm_samples;
@@ -47,13 +43,28 @@ layout(std430, binding = 4) buffer dft_data {
     float dft[];
 };
 
-layout(std430, binding = 5) buffer peak_data {
-    float peaks[];
+struct BandData {
+    float accumulated;
+    float window;
+    float smooth_window;
+    float avg_delta2;
+    float movement;
+    float other1, other2, other3;
 };
 
-uint64_t rotl(const uint64_t x, int k) {
-   return (x << k) | (x >> (64 - k));
-}
+layout(std430, binding = 5) buffer analysis_data {
+    BandData sub_bass;
+    BandData bass;
+    BandData lower_midrange;
+    BandData midrange;
+    BandData higher_midrange;
+    BandData presence;
+    BandData brilliance;
+};
+
+/* RANDOM */
+
+uint64_t rotl(const uint64_t x, int k) { return (x << k) | (x >> (64 - k)); }
 
 #define UINT64_T_MAX (~uint64_t(0))
 #define UINT32_T_MAX (~uint32_t(0))
@@ -64,7 +75,8 @@ uint64_t random_uint64(void) {
 
     int base_index = 4 * (y * int(gl_NumWorkGroups.x) + x);
 
-    const uint64_t result = rotl(random_seed[base_index + 0] + random_seed[base_index + 3], 23) + random_seed[base_index + 0];
+    const uint64_t result =
+        rotl(random_seed[base_index + 0] + random_seed[base_index + 3], 23) + random_seed[base_index + 0];
     const uint64_t t = random_seed[base_index + 1] << 17;
 
     random_seed[base_index + 2] ^= random_seed[base_index + 0];
@@ -79,148 +91,165 @@ uint64_t random_uint64(void) {
     return result;
 }
 
-float random_float(void) {
-    return float(random_uint64()) / float(UINT64_T_MAX);
+float random_float(void) { return float(random_uint64()) / float(UINT64_T_MAX); }
+
+/* UTILITY */
+
+mat2x2 rotate_matrix(float angle) { return mat2x2(vec2(cos(angle), sin(angle)), vec2(-sin(angle), cos(angle))); }
+
+vec2 rotate(vec2 center, float a, vec2 x) {
+    vec2 rel_x = x - center;
+    return center + rotate_matrix(a) * rel_x;
 }
 
-mat2x2 rotate_matrix(float angle) {
-    return mat2x2(vec2(cos(angle), sin(angle)), vec2(-sin(angle), cos(angle)));
-}
-
-bool is_0_to_1(float x) {
-    return 0 <= x && x <= 1;
-}
-
-bool is_nan(float x) {
-    return x != x;
-}
+vec2 scale(vec2 center, float a, vec2 x) { return center + (x - center) * a; }
 
 vec3 color(float x) {
     return vec3(sin(x), sin(x + 3.1415 * 2.0 / 3.0), sin(x + 3.1415 * 4.0 / 3.0)); //  / 2.0 + 0.5;
 }
 
 vec3 orb(vec2 pixel_position, vec2 orb_position, float radius) {
-  vec2 delta = (pixel_position - orb_position);
-  float distance = sqrt(dot(delta, delta));
-  return clamp(vec3(1 - distance / radius), 0, 1);
+    vec2 delta = (pixel_position - orb_position);
+    float distance = sqrt(dot(delta, delta));
+    return clamp(vec3(1 - distance / radius), 0, 1);
 }
 
+/**
+ * Get average pixel at `pos` in the previous frame.
+ */
 vec3 read_previous_at(vec2 pos) {
-  ivec2 base = ivec2(floor(pos));
-  vec3 ll = imageLoad(prev_frame, base + ivec2(0)).rgb;
-  vec3 lu = imageLoad(prev_frame, base + ivec2(0, 1)).rgb;
-  vec3 ul = imageLoad(prev_frame, base + ivec2(1, 0)).rgb;
-  vec3 uu = imageLoad(prev_frame, base + ivec2(1)).rgb;
+    ivec2 base = ivec2(floor(pos));
+    vec3 ll = imageLoad(prev_frame, base + ivec2(0)).rgb;
+    vec3 lu = imageLoad(prev_frame, base + ivec2(0, 1)).rgb;
+    vec3 ul = imageLoad(prev_frame, base + ivec2(1, 0)).rgb;
+    vec3 uu = imageLoad(prev_frame, base + ivec2(1)).rgb;
 
-  vec2 fract = fract(pos);
+    vec2 fract = fract(pos);
 
-  return fract.x * fract.y * uu + fract.x * (1 - fract.y) * ul + (1 - fract.x) * fract.y * lu + (1 - fract.x) * (1 - fract.y) * ll;
+    vec3 l = mix(ll, lu, fract.y);
+    vec3 u = mix(ul, uu, fract.y);
+    return mix(l, u, fract.x);
 }
 
-vec2 dft_at(int index) {
-    return vec2(dft[index], index == 0 || index == (dft_size / 2) ? 0.0 : dft[dft_size - index]);
+vec2 dft_at(int index) { return vec2(dft[index], index == 0 || index == (dft_size / 2) ? 0.0 : dft[dft_size - index]); }
+
+/**
+ * `x == 1` - more noize.
+ */
+float noize(float x) { return random_float() < x ? random_float() : 0.0; }
+
+/* EFFECTS */
+
+vec3 effect_transform_prev(vec2 pixel, vec2 image) {
+    vec2 center = image / 2;
+
+    float movement = lower_midrange.smooth_window + midrange.smooth_window + higher_midrange.smooth_window;
+    // TRY THIS!
+    /* float movement = lower_midrange.smooth_window / higher_midrange.smooth_window; */
+
+    /* next_pixel += make_orb(lower_midrange, pixel, image); */
+    /* next_pixel += make_orb(midrange, pixel, image); */
+    /* next_pixel += make_orb(higher_midrange, pixel, image); */
+
+    /* float scale_by = 1 + sin(seconds * 0.1) / 200; */
+    float scale_by = 1.0 + -0.00001 * movement;
+    vec2 scale_at = center + 0.75 * center * vec2(sin(seconds * 0.236745), sin(seconds * 0.278346));
+    vec2 scaled = scale(scale_at, scale_by, pixel);
+
+    float rotate_by = 0.003 * sin(seconds * 0.10234345);
+    vec2 rotate_at = center + 0.75 * center * vec2(sin(seconds * 0.48765), sin(seconds * 0.894765));
+    vec2 rotated = rotate(rotate_at, rotate_by, scaled);
+
+    vec2 transform_by = 5 * vec2(sin(seconds / 6.1), sin(seconds / 5.7212));
+    vec2 transformed = rotated + transform_by;
+
+    float damping = 0.99;
+    return damping * read_previous_at(transformed);
 }
 
-float noize(float x) {
-    return random_float() < x ? random_float() : 0.0;
+vec2 sin2(float factor, float scale_x, float scale_y) {
+    return vec2(sin(scale_x * factor), sin(scale_y * factor));
 }
 
-void basic() {
-  ivec2 ipixel_coords = ivec2(gl_GlobalInvocationID.xy);
-  vec2 pixel_coords = vec2(ipixel_coords);
-  ivec2 iimage_size = ivec2(gl_NumWorkGroups.xy);
-  vec2 image_size = vec2(iimage_size);
-  vec2 center = image_size / 2;
+vec3 make_orb(BandData band, vec2 pixel, vec2 image) {
+    vec2 global_center = 0.5 * image;
 
-  vec2 transformed_prev_pixel_coords = center + (rotate_matrix(0.01 * sin(seconds / 3.4)) * (pixel_coords - center) * (1 + sin(seconds / 4) / 100)) + 5 * sin(seconds / 4.239) * vec2(sin(seconds / 6.1), sin(seconds / 5.7212));
+    vec2 pos = vec2(0);
 
-  vec3 prev_pixel = read_previous_at(transformed_prev_pixel_coords);
+    // seconds + slow accum
+    float offset_factor = 0.2 * seconds + band.accumulated * 0.00001;
+    vec2 global_offset = sin2(offset_factor, 0.8457687721, 1.030459867);
+    vec2 center = global_center + global_offset * 0.2 * image;
+    vec2 avail_image = min(center, image - center) * 2;
 
-  /* vec2 orb_position = center + 300 * vec2( */
-  /*   sin(seconds * 1.34), */
-  /*   sin(seconds * 0.994) */
-  /* ); */
+    pos += center;
 
-  int total_size = dft_size / 2 + 1;
+    // movement (how much the music "moves"?)
+    float movement_factor = 0.001 * band.movement;
+    vec2 base_offset = sin2(movement_factor, 1.4985372301, 1.0123120123);
 
-  /* 10 -> 110 hz */
-  vec3 next_pixel = vec3(0);
-  for(int i=1; i < 1000; i*=2) {
-      vec2 orb_position = center + 600 * vec2(
-        sin((peaks[i] + dft[i]) / 300.0),
-        sin((peaks[i + 1] + dft[i+1]) / 300.0)
-      );
+    pos += 0.3 * avail_image * base_offset;
 
-      float orb_radius = max(3, min(length(dft_at(i)), 200) + 5 * sin(5 * seconds));
-      next_pixel += orb(pixel_coords, orb_position, orb_radius) * color(peaks[i+2] / 400);
-  }
+    // avg_delta2 ("instantaneous" movement)
+    float vibro_factor = 0.2 * band.avg_delta2;
+    vec2 local_offset = sin2(seconds + vibro_factor, 1.238746, 1.5867612);
 
-  float high_sum = 0;
-  for(int i=total_size / 2; i < total_size; i+=100) {
-      high_sum += length(dft_at(i));
-  }
-  next_pixel += noize(0.0001 * high_sum * high_sum) * color(seconds * 0.1413);
+    /* pos += 0.05 *  min(avail_image.x, avail_image.y) * local_offset; */
 
+    // windowed (how much energy now)
+    float radius = clamp(4 + 0.2 * band.window + 5 * sin(seconds), 3, 200);
 
-  vec3 pixel = 0.995 * prev_pixel + next_pixel;
+    // accumulated (how much energy total)
+    vec3 color = color(0.00005 * band.accumulated);
 
-  imageStore(next_frame, ipixel_coords, vec4(clamp(pixel, 0, 1), 1.0));
+    return orb(pixel, pos, radius) * color;
 }
 
-void pcm_vis() {
-  ivec2 ipixel_coords = ivec2(gl_GlobalInvocationID.xy);
-  vec2 pixel_coords = vec2(ipixel_coords);
-  ivec2 iimage_size = ivec2(gl_NumWorkGroups.xy);
-  vec2 image_size = vec2(iimage_size);
+vec3 effect_frequency_orbs(vec2 pixel, vec2 image) {
+    vec2 center = image / 2;
 
-  float rel_x = pixel_coords.x / image_size.x;
-  float samples_on_screen = 40000;
-  float index_sample = pcm_samples - samples_on_screen + samples_on_screen * rel_x;
+    vec3 next_pixel = vec3(0);
+    next_pixel += make_orb(sub_bass, pixel, image);
+    next_pixel += make_orb(bass, pixel, image);
+    next_pixel += make_orb(lower_midrange, pixel, image);
+    /* next_pixel += make_orb(midrange, pixel, image); */
+    /* next_pixel += make_orb(higher_midrange, pixel, image); */
+    /* next_pixel += make_orb(presence, pixel, image); */
+    /* next_pixel += make_orb(brilliance, pixel, image); */
 
-  float rel_y = 2 * pixel_coords.y / image_size.y - 1;
-
-  vec3 color = abs(pcm[int(index_sample)] - rel_y) < 0.01 ? vec3(1) : vec3(0);
-
-  imageStore(next_frame, ipixel_coords, vec4(color, 1.0));
+    return next_pixel;
 }
 
-void dft_vis() {
-  vec2 pixel_coords = vec2(gl_GlobalInvocationID.xy);
-  vec2 image_size = vec2(gl_NumWorkGroups.xy);
+vec3 effect_high_noize(vec2 pixel) {
+    vec3 noize_presence = noize(0.00001 * presence.window) * color(seconds * 0.1413);
+    vec3 noize_brilliance =  noize(0.00001 * brilliance.window) * color(seconds * 0.09384756);
+    return noize_presence + noize_brilliance;
+}
 
-  float rel_x = pixel_coords.x / image_size.x;
-  float rel_y = pixel_coords.y / image_size.y;
+/* MAIN */
 
-  int data_size = (dft_size / 2);
-  // For linear
-  /* // float float_x = rel_x * data_size; */
-  // For logarithmic
-  float max_x = log2(float(data_size));
-  float float_x = pow(2, max_x * rel_x);
+vec3 visualizer(ivec2 ipixel, ivec2 iimage) {
+    vec2 pixel = vec2(ipixel);
+    vec2 image = vec2(iimage);
+    vec2 center = image / 2;
 
-  int index_a = int(floor(float_x));
-  int index_b = int(ceil(float_x));
+    vec3 result = vec3(0);
 
-  float y_a = length(dft_at(index_a));
-  float y_b = length(dft_at(index_b));
+    vec3 transform_prev = effect_transform_prev(pixel, image);
+    result += transform_prev;
 
-  vec3 color = vec3(0, 1, 0);
-  if (peaks[index_a] == -1) {
-      color = vec3(0, 0, 1);
-  } else if (peaks[index_a] == 1) {
-      color = vec3(1, 0, 0);
-  }
+    vec3 frequency_orbs = effect_frequency_orbs(pixel, image);
+    result += frequency_orbs;
 
-  float mix_ab = fract(float_x);
-  float dft_y = mix(y_a, y_b, mix_ab);
+    vec3 high_noize = effect_high_noize(pixel);
+    result += high_noize;
 
-  float lum = rel_y < dft_y / 256 ? 1.0 : 0.0;
-  vec4 pixel = vec4(lum * color, 0);
-
-  imageStore(next_frame, ivec2(gl_GlobalInvocationID.xy), pixel);
+    return clamp(result, 0, 1);
 }
 
 void main() {
-    /* dft_vis(); */
-    basic();
+    ivec2 ipixel_coords = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 iimage_size = ivec2(gl_NumWorkGroups.xy);
+    vec3 pixel = visualizer(ipixel_coords, iimage_size);
+    imageStore(next_frame, ipixel_coords, vec4(pixel, 1));
 }
