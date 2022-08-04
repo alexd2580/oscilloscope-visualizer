@@ -71,20 +71,21 @@ int main(int argc, char* argv[]) {
     struct Size size = {.w = 800, .h = 800};
     Window window = create_window(size);
     Textures textures = create_textures(size);
-    Program program = create_program("assets/shaders/basic.comp");
+
+    Program basic = create_program("assets/shaders/basic.comp");
+    Program basic_present = create_program("assets/shaders/basic_present.comp");
+
     Timer timer = create_timer(1);
     Random random = create_random(size, 2);
-    Pcm pcm = create_pcm(8 * 44100, 3);
+    Pcm pcm = create_pcm(4 * 44100, 3);
     PcmStream pcm_stream = create_pcm_stream(pcm);
     DftData dft_data = create_dft_data(4096, 4);
     Analysis analysis = create_analysis(pcm, dft_data, 5);
     UserInput user_input = create_user_input();
 
     while(!user_input->quit_requested) {
-        // Recompile shader?
-        if(program_source_modified(program)) {
-            reinstall_program_if_valid(program);
-        }
+        reinstall_program_if_modified(basic);
+        reinstall_program_if_modified(basic_present);
 
         // Copy data.
         copy_timer_to_gpu(timer);
@@ -96,9 +97,10 @@ int main(int argc, char* argv[]) {
         // Prepare for next frame.
         swap_and_bind_textures(textures);
         // Render the next frame to the back texture.
-        run_program(program, (GLuint)size.w, (GLuint)size.h);
+        run_program(basic, (GLuint)size.w, (GLuint)size.h);
+        run_program(basic_present, (GLuint)size.w, (GLuint)size.h);
 
-        display_texture(window, get_back_texture(textures), size);
+        display_texture(window, get_present_texture(textures), size);
 
         // Events.
         handle_events(user_input, random, textures, &size);
@@ -111,7 +113,8 @@ int main(int argc, char* argv[]) {
     delete_pcm(pcm);
     delete_random(random);
     delete_timer(timer);
-    delete_program(program);
+    delete_program(basic_present);
+    delete_program(basic);
     delete_textures(textures);
     delete_window(window);
     delete_sdl();

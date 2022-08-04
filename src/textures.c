@@ -14,8 +14,9 @@
 #include "window.h"
 
 struct Textures_ {
-    GLuint front;
+    GLuint present;
     GLuint back;
+    GLuint front;
 
     struct Size size;
 };
@@ -30,10 +31,11 @@ void init_tex_params(GLuint texture, struct Size size) {
 }
 
 void initialize_textures(Textures textures) {
-    glGenTextures(1, &textures->front);
-    init_tex_params(textures->front, textures->size);
-    glGenTextures(1, &textures->back);
+    // Just hope for the best lol.
+    glGenTextures(3, &textures->present);
+    init_tex_params(textures->present, textures->size);
     init_tex_params(textures->back, textures->size);
+    init_tex_params(textures->front, textures->size);
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
@@ -47,8 +49,8 @@ Textures create_textures(struct Size size) {
 __attribute__((pure)) struct Size get_texture_size(Textures textures) { return textures->size; }
 
 void deinitialize_textures(Textures textures) {
-    glDeleteTextures(1, &textures->front);
-    glDeleteTextures(1, &textures->back);
+    // Just hope for the best again rofl.
+    glDeleteTextures(3, &textures->present);
 }
 
 void delete_textures(Textures textures) {
@@ -67,8 +69,9 @@ void swap_and_bind_textures(Textures textures) {
     textures->front = textures->back;
     textures->back = tmp;
 
-    glBindImageTexture(0, textures->back, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
-    glBindImageTexture(1, textures->front, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA32F);
+    glBindImageTexture(0, textures->present, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
+    glBindImageTexture(1, textures->back, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
+    glBindImageTexture(2, textures->front, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA32F);
 }
 
-__attribute__((pure)) GLuint get_back_texture(Textures textures) { return textures->back; }
+__attribute__((pure)) GLuint get_present_texture(Textures textures) { return textures->present; }

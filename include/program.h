@@ -17,6 +17,9 @@ bool program_source_modified(Program program);
 // Try to compile and install a program, keep the old one if something fails.
 void reinstall_program_if_valid(Program program);
 
+// Combine the modified check and validity check.
+void reinstall_program_if_modified(Program program);
+
 // Run the program and wait for completion.
 void run_program(Program program, GLuint w, GLuint h);
 

@@ -100,7 +100,7 @@ GLuint compile_shader(GLenum type, char const* source_path) {
         GLchar* log = (GLchar*)malloc((size_t)max_size * sizeof(GLchar));
         GLsizei length;
         glGetShaderInfoLog(shader, max_size, &length, log);
-        fprintf(stderr, "shader compilation failed\n%.*s", length, log);
+        fprintf(stderr, "%s: shader compilation failed\n%.*s", source_path, length, log);
         free(log);
         glDeleteShader(shader);
         return (GLuint)-1;
@@ -110,7 +110,7 @@ GLuint compile_shader(GLenum type, char const* source_path) {
 }
 
 bool program_source_modified(Program program) {
-      return get_mtime(program->compute_shader_path) > program->compute_shader_mtime;
+    return get_mtime(program->compute_shader_path) > program->compute_shader_mtime;
 }
 
 void uninstall_program(Program program) {
@@ -120,7 +120,7 @@ void uninstall_program(Program program) {
 
 void reinstall_program_if_valid(Program program) {
     time_t t = time(NULL);
-    struct tm * localized_time = localtime(&t);
+    struct tm* localized_time = localtime(&t);
     char s[1000];
     strftime(s, 1000, "%F %T", localized_time);
     printf("[%s] Compiling...\n", s);
@@ -128,7 +128,7 @@ void reinstall_program_if_valid(Program program) {
     program->compute_shader_mtime = get_mtime(program->compute_shader_path);
 
     GLuint compute_shader = compile_shader(GL_COMPUTE_SHADER, program->compute_shader_path);
-    if (compute_shader == (GLuint)-1) {
+    if(compute_shader == (GLuint)-1) {
         return;
     }
 
@@ -138,7 +138,7 @@ void reinstall_program_if_valid(Program program) {
 
     GLint status;
     glGetProgramiv(prgm, GL_LINK_STATUS, &status);
-    if (status == GL_FALSE) {
+    if(status == GL_FALSE) {
         int max_size = 10000;
         GLchar* log = (GLchar*)malloc((size_t)max_size * sizeof(GLchar));
         GLsizei length;
@@ -152,7 +152,7 @@ void reinstall_program_if_valid(Program program) {
         return;
     }
 
-    if (program->program != (GLuint)-1) {
+    if(program->program != (GLuint)-1) {
         uninstall_program(program);
     }
 
@@ -162,13 +162,17 @@ void reinstall_program_if_valid(Program program) {
     glUseProgram(prgm);
 }
 
-void run_program(Program program, GLuint w, GLuint h) {
-  glUseProgram(program->program);
-  glDispatchCompute(w, h, 1);
-  // Make sure writing to image has finished before read.
-  glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+void reinstall_program_if_modified(Program program) {
+    if(program_source_modified(program)) {
+        reinstall_program_if_valid(program);
+    }
 }
 
-void delete_program(Program program) {
-    uninstall_program(program);
+void run_program(Program program, GLuint w, GLuint h) {
+    glUseProgram(program->program);
+    glDispatchCompute(w, h, 1);
+    // Make sure writing to image has finished before read.
+    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 }
+
+void delete_program(Program program) { uninstall_program(program); }

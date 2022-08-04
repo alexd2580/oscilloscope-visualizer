@@ -54,7 +54,7 @@ struct BandData {
 };
 
 layout(std430, binding = 5) buffer analysis_data {
-    bool is_beat;
+    int is_beat;
     int beats;
     int bpm;
     int other;
@@ -146,16 +146,10 @@ float noize(float x) { return random_float() < x ? random_float() : 0.0; }
 
 /* EFFECTS */
 
-vec3 effect_frame(vec2 pixel, vec2 image) {
-    bool close_to_border = pixel.x < 3 || pixel.y < 3 || pixel.x > image.x - 4 || pixel.y > image.y - 4;
-    return close_to_border && is_beat ? color(float(beats) * 2 * 3.1415 * 0.3333) : vec3(0);
-}
-
 vec3 effect_transform_prev(vec2 pixel, vec2 image) {
     vec2 center = image / 2;
 
     float movement = lower_midrange.smooth_window + midrange.smooth_window + higher_midrange.smooth_window;
-    movement = - movement;
     // TRY THIS!
     /* float movement = lower_midrange.smooth_window / higher_midrange.smooth_window; */
 
@@ -265,24 +259,21 @@ vec3 effect_high_noize(vec2 pixel) {
 
 /* MAIN */
 
-vec3 visualizer_back(ivec2 ipixel, ivec2 iimage) {
+vec3 visualizer_front(ivec2 ipixel, ivec2 iimage) {
     vec2 pixel = vec2(ipixel);
     vec2 image = vec2(iimage);
     vec2 center = image / 2;
 
     vec3 result = vec3(0);
 
-    vec3 transform_prev = effect_transform_prev(pixel, image);
-    result += transform_prev;
+    /* vec3 transform_prev = effect_transform_prev(pixel, image); */
+    /* result += transform_prev; */
 
-    vec3 frequency_orbs = effect_frequency_orbs(pixel, image);
+    vec3 frequency_orbs = effect_frequency_orbs_front(pixel, image);
     result += frequency_orbs;
 
-    vec3 high_noize = effect_high_noize(pixel);
-    result += high_noize;
-
-    vec3 frame = effect_frame(pixel, image);
-    result += frame;
+    /* vec3 high_noize = effect_high_noize(pixel); */
+    /* result += high_noize; */
 
     return clamp(result, 0, 1);
 }
@@ -290,6 +281,10 @@ vec3 visualizer_back(ivec2 ipixel, ivec2 iimage) {
 void main() {
     ivec2 ipixel_coords = ivec2(gl_GlobalInvocationID.xy);
     ivec2 iimage_size = ivec2(gl_NumWorkGroups.xy);
-    vec3 pixel_back = visualizer_back(ipixel_coords, iimage_size);
-    imageStore(back_frame, ipixel_coords, vec4(pixel_back, 1));
+    vec3 pixel_front = visualizer_front(ipixel_coords, iimage_size) * 2;
+
+    vec3 pixel_back_1 = imageLoad(back_frame, ipixel_coords).xyz;
+    vec3 pixel_back_2 = imageLoad(back_frame, iimage_size - ipixel_coords - ivec2(1)).xyz;
+
+    imageStore(present_frame, ipixel_coords, vec4((pixel_back_1 + pixel_back_2) / 2 + pixel_front, 1));
 }

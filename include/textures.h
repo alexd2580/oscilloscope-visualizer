@@ -11,6 +11,6 @@ Textures create_textures(struct Size size);
 void swap_and_bind_textures(Textures textures);
 void update_textures_window_size(Textures textures, struct Size size);
 void delete_textures(Textures textures);
-__attribute__((pure)) GLuint get_back_texture(Textures textures);
+__attribute__((pure)) GLuint get_present_texture(Textures textures);
 
 #endif
