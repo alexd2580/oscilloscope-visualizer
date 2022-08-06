@@ -30,7 +30,7 @@ struct Analysis_ {
     // Time of last beat detection.
     time_t last_time;
     // Duration between runs of beat_detection.
-    // Used to adjust the amount of samples for 1.5 seconds.
+    // Used to adjust the amount of samples for the short term average.
     float moving_average_process_time_ms;
 
     // No beat detected below this value.
@@ -38,14 +38,15 @@ struct Analysis_ {
     // beat <=> current > multiplier * average && average > noise
     float* beat_threshold_multipliers;
 
-    // Last 1.5s * sample_rate frequencies.
     // Interleaved format. Use `num_beat_frequencies * i + [position of beat frequency]` to access.
+    int short_term_average_ms;
     int num_beat_samples;
     int sample_index;
     float* dft_values;
 
-    // Sum of frequency "strengths" during last 1.5 seconds. (Computed from `dft_values`)
-    float* sums_1500ms;
+    // Sum of frequency "strengths" during last X seconds. (Computed from `dft_values`)
+    float* sums_short_average;
+    float* sum_squares_short_average;
     float* long_term_moving_averages;
 
     /* GPU DATA */
@@ -104,11 +105,11 @@ Analysis create_analysis(Pcm pcm, DftData dft_data, unsigned int index) {
     // Beat detection.
     analysis->num_beat_frequencies = 4;
     analysis->beat_frequencies = (int*)malloc((size_t)analysis->num_beat_frequencies * sizeof(int));
-    analysis->beat_frequencies[0] = 75;
-    analysis->beat_frequencies[1] = 100;
-    analysis->beat_frequencies[2] = 125;
-    analysis->beat_frequencies[3] = 200;
-    analysis->num_beat_frequencies = 2;
+    analysis->beat_frequencies[0] = 60;
+    analysis->beat_frequencies[1] = 75;
+    analysis->beat_frequencies[2] = 95;
+    analysis->beat_frequencies[3] = 110;
+    analysis->num_beat_frequencies = 3;
 
     analysis->beat_frequency_indices = (int*)malloc((size_t)analysis->num_beat_frequencies * sizeof(int));
     for(int i = 0; i < analysis->num_beat_frequencies; i++) {
@@ -125,12 +126,14 @@ Analysis create_analysis(Pcm pcm, DftData dft_data, unsigned int index) {
     analysis->noise_multipliers[3] = 0.25f;
 
     analysis->beat_threshold_multipliers = (float*)malloc((size_t)analysis->num_beat_frequencies * sizeof(float));
-    analysis->beat_threshold_multipliers[0] = 3.f;
-    analysis->beat_threshold_multipliers[1] = 3.f;
-    analysis->beat_threshold_multipliers[2] = 3.f;
-    analysis->beat_threshold_multipliers[3] = 3.f;
+    analysis->beat_threshold_multipliers[0] = 3.5f;
+    analysis->beat_threshold_multipliers[1] = 3.5f;
+    analysis->beat_threshold_multipliers[2] = 3.5f;
+    analysis->beat_threshold_multipliers[3] = 3.5f;
 
-    analysis->num_beat_samples = (int)(1500.f / analysis->moving_average_process_time_ms);
+    analysis->short_term_average_ms = 8000;
+    analysis->num_beat_samples =
+        (int)((float)analysis->short_term_average_ms / analysis->moving_average_process_time_ms);
     analysis->sample_index = 0;
     int num_dft_values = analysis->num_beat_frequencies * analysis->num_beat_samples;
     analysis->dft_values = (float*)malloc((size_t)num_dft_values * sizeof(float));
@@ -138,14 +141,14 @@ Analysis create_analysis(Pcm pcm, DftData dft_data, unsigned int index) {
         analysis->dft_values[i] = 0.f;
     }
 
-    analysis->sums_1500ms = (float*)malloc((size_t)analysis->num_beat_frequencies * sizeof(float));
-    for(int i = 0; i < analysis->num_beat_frequencies; i++) {
-        analysis->sums_1500ms[i] = 0.f;
-    }
-
+    analysis->sums_short_average = (float*)malloc((size_t)analysis->num_beat_frequencies * sizeof(float));
+    analysis->sum_squares_short_average = (float*)malloc((size_t)analysis->num_beat_frequencies * sizeof(float));
     analysis->long_term_moving_averages = (float*)malloc((size_t)analysis->num_beat_frequencies * sizeof(float));
+
     for(int i = 0; i < analysis->num_beat_frequencies; i++) {
-        analysis->long_term_moving_averages[i] = 0.f;
+        analysis->sums_short_average[i] = 0.f;
+        analysis->sum_squares_short_average[i] = 0.f;
+        analysis->long_term_moving_averages[i] = 1.f;
     }
 
     // CPU side buffer data.
@@ -199,12 +202,13 @@ void compute_and_copy_analysis_to_gpu(DftData dft_data, Analysis analysis) {
     // Beat detection.
     // Check and adjust timing.
     time_t this_time = clock();
-    float delta_ms = 1000.f * (float)(this_time - analysis->last_time) / CLOCKS_PER_SEC;
+    float const s_to_ms = 1000.0f;
+    float delta_ms = s_to_ms * (float)(this_time - analysis->last_time) / CLOCKS_PER_SEC;
     analysis->last_time = this_time;
     float old_avg_process_time = analysis->moving_average_process_time_ms;
-    analysis->moving_average_process_time_ms = mix(old_avg_process_time, delta_ms, 0.1f);
+    analysis->moving_average_process_time_ms = mix(old_avg_process_time, delta_ms, 0.01f);
     int num_old_samples = analysis->num_beat_samples;
-    int num_new_samples = (int)(1500.f / analysis->moving_average_process_time_ms);
+    int num_new_samples = (int)((float)analysis->short_term_average_ms / analysis->moving_average_process_time_ms);
 
     float difference_percent = fabsf((float)(num_new_samples - num_old_samples)) / (float)(num_old_samples);
     if(difference_percent > 0.15f) {
@@ -218,7 +222,8 @@ void compute_and_copy_analysis_to_gpu(DftData dft_data, Analysis analysis) {
 
         // Reset the sums.
         for(int i = 0; i < num_freqs; i++) {
-            analysis->sums_1500ms[i] = 0.f;
+            analysis->sums_short_average[i] = 0.f;
+            analysis->sum_squares_short_average[i] = 0.f;
         }
 
         // Copy all dft values to the new buffer (recompute_sum).
@@ -230,18 +235,20 @@ void compute_and_copy_analysis_to_gpu(DftData dft_data, Analysis analysis) {
                 float value = analysis->dft_values[old_index];
                 int new_index = num_freqs * sample_index + freq_index;
                 new_dft_values[new_index] = value;
-                analysis->sums_1500ms[freq_index] += value;
+                analysis->sums_short_average[freq_index] += value;
+                analysis->sum_squares_short_average[freq_index] += value * value;
             }
         }
 
         // For each beat frequency.
         for(int freq_index = 0; freq_index < num_freqs; freq_index++) {
             // Fill potential extension with average build from copied portion of values.
-            float freq_average = analysis->sums_1500ms[freq_index] / (float)num_values_to_copy;
+            float freq_average = analysis->sums_short_average[freq_index] / (float)num_values_to_copy;
             for(int sample_index = num_values_to_copy; sample_index < num_new_samples; sample_index++) {
                 int new_index = num_freqs * sample_index + freq_index;
                 new_dft_values[new_index] = freq_average;
-                analysis->sums_1500ms[freq_index] += freq_average;
+                analysis->sums_short_average[freq_index] += freq_average;
+                analysis->sum_squares_short_average[freq_index] += freq_average * freq_average;
             }
         }
 
@@ -252,54 +259,76 @@ void compute_and_copy_analysis_to_gpu(DftData dft_data, Analysis analysis) {
         analysis->dft_values = new_dft_values;
     }
 
-    // Yes i know about the alloca vulnerability and i don't care!
-    // Thank you anyway, clang.
     bool total_is_beat = false;
-    bool* is_beat = alloca((size_t)analysis->num_beat_frequencies * sizeof(bool));
+    bool* is_beat = (bool*)malloc((size_t)analysis->num_beat_frequencies * sizeof(bool));
+    float* sd = (float*)malloc((size_t)analysis->num_beat_frequencies * sizeof(float));
 
     for(int i = 0; i < analysis->num_beat_frequencies; i++) {
         // Adjust average TODO recompute entirely every X frames (it's not an int, it's a float!)?
         // Subtract value i'm going to replace.
         int dft_value_index = analysis->sample_index * analysis->num_beat_frequencies + i;
-        analysis->sums_1500ms[i] -= analysis->dft_values[dft_value_index];
+        float prev_value = analysis->dft_values[dft_value_index];
+        analysis->sums_short_average[i] -= prev_value;
+        analysis->sum_squares_short_average[i] -= prev_value * prev_value;
+
         // Add the current value.
         float current_value = dft_at(dft_data, analysis->beat_frequency_indices[i]);
         analysis->dft_values[dft_value_index] = current_value;
-        analysis->sums_1500ms[i] += analysis->dft_values[dft_value_index];
+        analysis->sums_short_average[i] += current_value;
+        analysis->sum_squares_short_average[i] += current_value * current_value;
         analysis->sample_index++;
         analysis->sample_index = analysis->sample_index % analysis->num_beat_samples;
 
         // Compute the average.
-        float average_1500ms = analysis->sums_1500ms[i] / (float)analysis->num_beat_samples;
-        float average_long_term = mix(analysis->long_term_moving_averages[i], average_1500ms, 0.0001f);
+        float short_average = analysis->sums_short_average[i] / (float)analysis->num_beat_samples;
+        float average_long_term = mix(analysis->long_term_moving_averages[i], short_average, 0.0001f);
         analysis->long_term_moving_averages[i] = average_long_term;
 
+        // Compute SD as `sqrt(average of squares - average squared)`.
+        float average_of_squares = analysis->sum_squares_short_average[i] / (float)analysis->num_beat_samples;
+        float squared_average = powf(analysis->sums_short_average[i] / (float)analysis->num_beat_samples, 2);
+        sd[i] = sqrtf(average_of_squares - squared_average);
+
         // Detect beat.
-        bool is_not_noise = average_1500ms > analysis->noise_multipliers[i] * average_long_term;
-        bool is_local_beat = current_value > analysis->beat_threshold_multipliers[i] * average_1500ms;
-        is_beat[i] = is_not_noise && is_local_beat;
+        bool is_not_noise = short_average > analysis->noise_multipliers[i] * average_long_term;
+        bool is_over_sd = current_value > short_average + 2.4f * sd[i];
+        bool is_local_beat = current_value > analysis->beat_threshold_multipliers[i] * short_average;
+        is_beat[i] = is_not_noise && is_over_sd; // && is_local_beat;
         total_is_beat |= is_beat[i];
     }
 
     if(total_is_beat) {
         analysis->data.beats += analysis->data.is_beat ? 0 : 1;
-        printf("BEAT %d\n", analysis->data.beats);
+        /* printf("BEAT %d\n", analysis->data.beats); */
 
-        /* float avg = analysis->sums_1500ms[i] / (float)analysis->num_beat_samples; */
-        /* printf("hz %d\tidx %d\tnoize %.2f\tavg %.2f\tthresh %.2f\tcur %.2f\tbeat? %d\n", analysis->beat_frequencies[i], */
-        /*        analysis->beat_frequency_indices[i], (double)(analysis->noise_multipliers[i] * avg), */
-        /*        (double)avg, */
-        /*        (double)(analysis->beat_threshold_multipliers[i] * avg), */
-        /*        (double)dft_at(dft_data, analysis->beat_frequency_indices[i]), is_beat[i]); */
+        if(/* show debug*/ false) {
+            for(int i = 0; i < analysis->num_beat_frequencies; i++) {
+                float avg = analysis->sums_short_average[i] / (float)analysis->num_beat_samples;
+                printf("hz %d\tidx %d\tnoize %.2f\tavg %.2f\tthresh %.2f\tcur %.2f\tbeat? %d\n",
+                       analysis->beat_frequencies[i], analysis->beat_frequency_indices[i],
+                       (double)(analysis->noise_multipliers[i] * analysis->long_term_moving_averages[i]), (double)avg,
+                       (double)(analysis->beat_threshold_multipliers[i] * avg),
+                       (double)dft_at(dft_data, analysis->beat_frequency_indices[i]), is_beat[i]);
+            }
+        }
     }
-    for(int i = 0; i < analysis->num_beat_frequencies; i++) {
-        float avg = analysis->sums_1500ms[i] / (float)analysis->num_beat_samples;
-        printf("hz %d\tidx %d\tnoize %.2f\tavg %.2f\tthresh %.2f\tcur %.2f\tbeat? %d\n", analysis->beat_frequencies[i],
-               analysis->beat_frequency_indices[i], (double)(analysis->noise_multipliers[i] * analysis->long_term_moving_averages[i]),
-               (double)avg,
-               (double)(analysis->beat_threshold_multipliers[i] * avg),
-               (double)dft_at(dft_data, analysis->beat_frequency_indices[i]), is_beat[i]);
+
+    if(/* show print*/ true) {
+        printf("%d", analysis->data.beats);
+        for(int i = 0; i < analysis->num_beat_frequencies; i++) {
+            float avg = analysis->sums_short_average[i] / (float)analysis->num_beat_samples;
+            /* hz idx noize avg thresh cur sd is_beat */
+            printf(",%d,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%d", analysis->beat_frequencies[i],
+                   analysis->beat_frequency_indices[i],
+                   (double)(analysis->noise_multipliers[i] * analysis->long_term_moving_averages[i]), (double)avg,
+                   (double)(analysis->beat_threshold_multipliers[i] * avg),
+                   (double)dft_at(dft_data, analysis->beat_frequency_indices[i]), avg + 2.4f * sd[i], is_beat[i]);
+        }
+        printf("\n");
     }
+
+    free(sd);
+    free(is_beat);
 
     analysis->data.is_beat = total_is_beat;
 
@@ -308,7 +337,8 @@ void compute_and_copy_analysis_to_gpu(DftData dft_data, Analysis analysis) {
 
 void delete_analysis(Analysis analysis) {
     free(analysis->long_term_moving_averages);
-    free(analysis->sums_1500ms);
+    free(analysis->sum_squares_short_average);
+    free(analysis->sums_short_average);
     free(analysis->dft_values);
     free(analysis->beat_threshold_multipliers);
     free(analysis->noise_multipliers);
