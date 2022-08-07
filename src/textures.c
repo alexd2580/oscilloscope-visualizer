@@ -8,15 +8,22 @@
 #include <SDL2/SDL_opengl.h>
 #include <SDL2/SDL_opengl_glext.h>
 
-#include "defines.h"
+#include "globals.h"
 #include "sdl.h"
 #include "textures.h"
 #include "window.h"
 
 struct Textures_ {
+    // Output texture will be shown on-screen.
     GLuint present;
-    GLuint back;
-    GLuint front;
+
+    // Auxiliary textures.
+    GLuint back_a;
+    GLuint front_a;
+    GLuint back_b;
+    GLuint front_b;
+    GLuint back_c;
+    GLuint front_c;
 
     struct Size size;
 };
@@ -32,10 +39,11 @@ void init_tex_params(GLuint texture, struct Size size) {
 
 void initialize_textures(Textures textures) {
     // Just hope for the best lol.
-    glGenTextures(3, &textures->present);
-    init_tex_params(textures->present, textures->size);
-    init_tex_params(textures->back, textures->size);
-    init_tex_params(textures->front, textures->size);
+    GLuint* t = &textures->present;
+    glGenTextures(7, t);
+    FORI(0, 7) {
+        init_tex_params(t[i], textures->size);
+    }
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
@@ -64,14 +72,24 @@ void update_textures_window_size(Textures textures, struct Size size) {
     initialize_textures(textures);
 }
 
+void swap(GLuint* a, GLuint* b) {
+    GLuint tmp = *a;
+    *a = *b;
+    *b = tmp;
+}
+
 void swap_and_bind_textures(Textures textures) {
-    GLuint tmp = textures->front;
-    textures->front = textures->back;
-    textures->back = tmp;
+    swap(&textures->back_a, &textures->front_a);
+    swap(&textures->back_b, &textures->front_b);
+    swap(&textures->back_c, &textures->front_c);
 
     glBindImageTexture(0, textures->present, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
-    glBindImageTexture(1, textures->back, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
-    glBindImageTexture(2, textures->front, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA32F);
+    glBindImageTexture(1, textures->back_a, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
+    glBindImageTexture(2, textures->front_a, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA32F);
+    glBindImageTexture(3, textures->back_b, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
+    glBindImageTexture(4, textures->front_b, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA32F);
+    glBindImageTexture(5, textures->back_b, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
+    glBindImageTexture(6, textures->front_b, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA32F);
 }
 
 __attribute__((pure)) GLuint get_present_texture(Textures textures) { return textures->present; }

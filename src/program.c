@@ -123,7 +123,7 @@ void reinstall_program_if_valid(Program program) {
     struct tm* localized_time = localtime(&t);
     char s[1000];
     strftime(s, 1000, "%F %T", localized_time);
-    printf("[%s] Compiling...\n", s);
+    printf("[%s] Compiling %s...\n", s, program->compute_shader_path);
 
     program->compute_shader_mtime = get_mtime(program->compute_shader_path);
 
@@ -170,7 +170,7 @@ void reinstall_program_if_modified(Program program) {
 
 void run_program(Program program, GLuint w, GLuint h) {
     glUseProgram(program->program);
-    glDispatchCompute(w, h, 1);
+    glDispatchCompute(w / 8, h / 8, 1);
     // Make sure writing to image has finished before read.
     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 }

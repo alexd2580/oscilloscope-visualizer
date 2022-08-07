@@ -1,6 +1,6 @@
 #include <math.h>
 
-#include "defines.h"
+#include "globals.h"
 #include "vec.h"
 
 #define MARGS(...) __VA_ARGS__

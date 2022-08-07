@@ -1,5 +1,5 @@
-#ifndef INCLUDE_DEFINES_H
-#define INCLUDE_DEFINES_H
+#ifndef INCLUDE_GLOBALS
+#define INCLUDE_GLOBALS
 
 #define PI 3.14159f
 
@@ -10,5 +10,11 @@
 #define COMPILE_TIME_ASSERT(e) extern char ct_assert2[(e) - 1]
 
 #define isizeof(x) ((int)sizeof(x))
+
+#define ALLOCATE(n, t) ((t*)malloc((size_t)(n) * sizeof(t)))
+
+#define FORI(lo, hi) for(int i=(lo); i<(hi); i++)
+
+__attribute__((const)) float mix(float a, float b, float x);
 
 #endif

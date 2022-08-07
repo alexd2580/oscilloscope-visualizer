@@ -6,7 +6,7 @@
 #include <fftw3.h>
 
 #include "buffers.h"
-#include "defines.h"
+#include "globals.h"
 #include "dft.h"
 #include "pcm.h"
 

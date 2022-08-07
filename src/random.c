@@ -2,12 +2,12 @@
 #include <stdlib.h>
 
 #include "buffers.h"
-#include "defines.h"
+#include "globals.h"
 #include "random.h"
 #include "size.h"
 
 struct Random_ {
-    uint64_t* seed;
+    float* seed;
 
     unsigned int index;
     Buffer buffer;
@@ -21,14 +21,21 @@ uint64_t splitmix_next(void) {
     return z ^ (z >> 31);
 }
 
+union X {
+    uint64_t u64;
+    float f32;
+};
+
 void initialize_random(Random random, struct Size size) {
-    int num_uints = 4 * size.w * size.h;
-    random->seed = malloc((unsigned int)num_uints * sizeof(uint64_t));
-    for(int i = 0; i < num_uints; i++) {
-        random->seed[i] = splitmix_next();
+    int num_values = size.w * size.h;
+    random->seed = ALLOCATE(num_values, float);
+    FORI(0, num_values) {
+        union X x;
+        x.u64 = splitmix_next();
+        random->seed[i] = x.f32;
     }
 
-    int gpu_buffer_size = num_uints * isizeof(uint64_t);
+    int gpu_buffer_size = num_values * isizeof(float);
     random->buffer = create_storage_buffer(gpu_buffer_size, random->index);
     copy_buffer_to_gpu(random->buffer, random->seed, 0, gpu_buffer_size);
 }

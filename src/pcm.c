@@ -11,7 +11,7 @@
 #include <sys/types.h>
 
 #include "buffers.h"
-#include "defines.h"
+#include "globals.h"
 #include "pcm.h"
 
 struct Pcm_ {

@@ -1,290 +1,30 @@
 #version 450
 
-#extension GL_NV_gpu_shader5 : enable
-#extension GL_ARB_gpu_shader_int64 : enable
+// Define a work group size to be 8x8.
+layout(local_size_x = 8, local_size_y = 8) in;
 
-/* out vec4 color; */
-/* in vec2 uv; */
-
-/* uvec3 gl_NumWorkGroups; // global work group size we gave to glDispatchCompute() */
-/* uvec3 gl_WorkGroupSize; // local work group size we defined with layout */
-/* uvec3 gl_WorkGroupID; // position of current invocation in global work group */
-/* uvec3 gl_LocalInvocationID; // position of current invocation in local work group */
-/* uvec3 gl_GlobalInvocationID; // unique index of current invocation in global work group */
+/* uvec3 gl_NumWorkGroups; // Global work group size we gave to glDispatchCompute() */
+/* uvec3 gl_WorkGroupSize; // Local work group size we defined with layout */
+/* uvec3 gl_WorkGroupID; // Position of current invocation in global work group */
+/* uvec3 gl_LocalInvocationID; // Position of current invocation in local work group */
+/* uvec3 gl_GlobalInvocationID; // Unique index of current invocation in global work group */
 /* uint gl_LocalInvocationIndex; // 1d index representation of gl_LocalInvocationID */
 
-// Define a work group size to be 1x1.
-layout(local_size_x = 1, local_size_y = 1) in;
-
 // Use the image2D sampler to address specific pixels directly.
-layout(rgba32f, binding = 0) uniform image2D present_frame;
-layout(rgba32f, binding = 1) uniform image2D back_frame;
-layout(rgba32f, binding = 2) uniform image2D front_frame;
-
-layout(binding = 1) uniform timer { float seconds; };
-
-layout(std430, binding = 2) buffer random { uint64_t random_seed[]; };
-
-layout(std430, binding = 3) buffer pcm_data {
-    int pcm_samples;
-    int sample_index;
-    // `pcm` contains `2 * pcm_samples` entries.
-    // These are the left channel values followed by the right channel values.
-    float pcm[];
-};
-
-layout(std430, binding = 4) buffer dft_data {
-    int dft_size;
-    // `dft` contains `dft_size` entries.
-    // Both raw and smooth sections follow the same pattern:
-    // First come `dft_size / 2 + 1` real values.
-    // Then come the `dft_size / 2 - 1` imaginary values in reverse, starting at
-    // `dft_size / 2 - 1` (for even sizes). There is no imaginary part for the
-    // first and last value.
-    float dft[];
-};
-
-struct BandData {
-    float accumulated;
-    float window;
-    float smooth_window;
-    float avg_delta2;
-    float movement;
-    float other1, other2, other3;
-};
-
-layout(std430, binding = 5) buffer analysis_data {
-    int is_beat;
-    int beats;
-    int bpm;
-    int other;
-
-    BandData sub_bass;
-    BandData bass;
-    BandData lower_midrange;
-    BandData midrange;
-    BandData higher_midrange;
-    BandData presence;
-    BandData brilliance;
-};
-
-/* RANDOM */
-
-uint64_t rotl(const uint64_t x, int k) { return (x << k) | (x >> (64 - k)); }
-
-#define UINT64_T_MAX (~uint64_t(0))
-#define UINT32_T_MAX (~uint32_t(0))
-
-uint64_t random_uint64(void) {
-    int x = int(gl_GlobalInvocationID.x);
-    int y = int(gl_GlobalInvocationID.y);
-
-    int base_index = 4 * (y * int(gl_NumWorkGroups.x) + x);
-
-    const uint64_t result =
-        rotl(random_seed[base_index + 0] + random_seed[base_index + 3], 23) + random_seed[base_index + 0];
-    const uint64_t t = random_seed[base_index + 1] << 17;
-
-    random_seed[base_index + 2] ^= random_seed[base_index + 0];
-    random_seed[base_index + 3] ^= random_seed[base_index + 1];
-    random_seed[base_index + 1] ^= random_seed[base_index + 2];
-    random_seed[base_index + 0] ^= random_seed[base_index + 3];
-
-    random_seed[base_index + 2] ^= t;
-
-    random_seed[base_index + 3] = rotl(random_seed[base_index + 3], 45);
-
-    return result;
-}
-
-float random_float(void) { return float(random_uint64()) / float(UINT64_T_MAX); }
-
-/* UTILITY */
-
-mat2x2 rotate_matrix(float angle) { return mat2x2(vec2(cos(angle), sin(angle)), vec2(-sin(angle), cos(angle))); }
-
-vec2 rotate(vec2 center, float a, vec2 x) {
-    vec2 rel_x = x - center;
-    return center + rotate_matrix(a) * rel_x;
-}
-
-vec2 scale(vec2 center, float a, vec2 x) { return center + (x - center) * a; }
-
-vec3 color(float x) {
-    return vec3(sin(x), sin(x + 3.1415 * 2.0 / 3.0), sin(x + 3.1415 * 4.0 / 3.0)); //  / 2.0 + 0.5;
-}
-
-vec3 orb(vec2 pixel_position, vec2 orb_position, float radius) {
-    vec2 delta = (pixel_position - orb_position);
-    float distance = sqrt(dot(delta, delta));
-    return clamp(vec3(1 - distance / radius), 0, 1);
-}
-
-/**
- * Get average pixel at `pos` in the previous frame.
- */
-vec3 read_previous_at(vec2 pos) {
-    ivec2 base = ivec2(floor(pos));
-    vec3 ll = imageLoad(front_frame, base + ivec2(0)).rgb;
-    vec3 lu = imageLoad(front_frame, base + ivec2(0, 1)).rgb;
-    vec3 ul = imageLoad(front_frame, base + ivec2(1, 0)).rgb;
-    vec3 uu = imageLoad(front_frame, base + ivec2(1)).rgb;
-
-    vec2 fract = fract(pos);
-
-    vec3 l = mix(ll, lu, fract.y);
-    vec3 u = mix(ul, uu, fract.y);
-    return mix(l, u, fract.x);
-}
-
-vec2 dft_at(int index) { return vec2(dft[index], index == 0 || index == (dft_size / 2) ? 0.0 : dft[dft_size - index]); }
-
-/**
- * `x == 1` - more noize.
- */
-float noize(float x) { return random_float() < x ? random_float() : 0.0; }
-
-/* EFFECTS */
-
-vec3 effect_transform_prev(vec2 pixel, vec2 image) {
-    vec2 center = image / 2;
-
-    float movement = lower_midrange.smooth_window + midrange.smooth_window + higher_midrange.smooth_window;
-    // TRY THIS!
-    /* float movement = lower_midrange.smooth_window / higher_midrange.smooth_window; */
-
-    /* next_pixel += make_orb(lower_midrange, pixel, image); */
-    /* next_pixel += make_orb(midrange, pixel, image); */
-    /* next_pixel += make_orb(higher_midrange, pixel, image); */
-
-    /* float scale_by = 1 + sin(seconds * 0.1) / 200; */
-    float scale_by = 1.0 + -0.00001 * movement;
-    vec2 scale_at = center + 0.75 * center * vec2(sin(seconds * 0.236745), sin(seconds * 0.278346));
-    vec2 scaled = scale(scale_at, scale_by, pixel);
-
-    float rotate_by = 0.003 * sin(seconds * 0.10234345);
-    vec2 rotate_at = center + 0.75 * center * vec2(sin(seconds * 0.48765), sin(seconds * 0.894765));
-    vec2 rotated = rotate(rotate_at, rotate_by, scaled);
-
-    vec2 transform_by = 5 * vec2(sin(seconds / 6.1), sin(seconds / 5.7212));
-    vec2 transformed = rotated + transform_by;
-
-    float damping = 0.99;
-    return damping * read_previous_at(transformed);
-}
-
-vec2 sin2(float factor, float scale_x, float scale_y) {
-    return vec2(sin(scale_x * factor), sin(scale_y * factor));
-}
-
-vec3 make_orb_(float offset_factor, float movement_factor, float vibro_factor, float radius, float color_offset, vec2 pixel, vec2 image) {
-    vec2 global_center = 0.5 * image;
-
-    vec2 pos = vec2(0);
-
-    vec2 global_offset = sin2(offset_factor, 0.8457687721, 1.030459867);
-    vec2 center = global_center + global_offset * 0.2 * image;
-    vec2 avail_image = min(center, image - center) * 2;
-
-    pos += center;
-
-    vec2 base_offset = sin2(movement_factor, 1.4985372301, 1.0123120123);
-
-    pos += 0.3 * avail_image * base_offset;
-
-    vec2 local_offset = sin2(seconds + vibro_factor, 1.238746, 1.5867612);
-
-    /* pos += 0.05 *  min(avail_image.x, avail_image.y) * local_offset; */
-
-    vec3 color = color(color_offset);
-
-    return orb(pixel, pos, radius) * color;
-}
-
-vec3 make_orb(BandData band, vec2 pixel, vec2 image) {
-    float offset_factor = 0.2 * seconds + band.accumulated * 0.00001;
-    float movement_factor = 0.001 * band.movement;
-    float vibro_factor = 0.2 * band.avg_delta2;
-    float radius = clamp(4 + 0.2 * band.window + 5 * sin(seconds), 3, 200);
-    float color_offset = 0.00005 * band.accumulated;
-
-    return make_orb_(offset_factor, movement_factor, vibro_factor, radius, color_offset, pixel, image);
-}
-
-vec3 make_orb2(BandData band, vec2 pixel, vec2 image) {
-    float offset_factor = 0.2 * seconds + band.accumulated * 0.0000001;
-    float movement_factor = 0.0003 * band.movement;
-    float vibro_factor = 0.2 * band.avg_delta2;
-    float radius = clamp(4 + 0.3 * band.window + 5 * sin(seconds), 3, 200);
-    float color_offset = 0.0001 * band.accumulated;
-
-    return make_orb_(offset_factor, movement_factor, vibro_factor, radius, color_offset, pixel, image);
-}
-
-vec3 effect_frequency_orbs(vec2 pixel, vec2 image) {
-    vec2 center = image / 2;
-
-    vec3 next_pixel = vec3(0);
-    next_pixel += make_orb(sub_bass, pixel, image);
-    next_pixel += make_orb(bass, pixel, image);
-    next_pixel += make_orb(lower_midrange, pixel, image);
-    /* next_pixel += make_orb(midrange, pixel, image); */
-    /* next_pixel += make_orb(higher_midrange, pixel, image); */
-    /* next_pixel += make_orb(presence, pixel, image); */
-    /* next_pixel += make_orb(brilliance, pixel, image); */
-
-    return next_pixel;
-}
-
-vec3 effect_frequency_orbs_front(vec2 pixel, vec2 image) {
-    vec2 center = image / 2;
-
-    vec3 next_pixel = vec3(0);
-    /* next_pixel += make_orb(sub_bass, pixel, image); */
-    /* next_pixel += make_orb(bass, pixel, image); */
-    /* next_pixel += make_orb(lower_midrange, pixel, image); */
-    next_pixel += make_orb2(midrange, pixel, image);
-    next_pixel += make_orb2(higher_midrange, pixel, image);
-    next_pixel += make_orb2(presence, pixel, image);
-    next_pixel += make_orb2(brilliance, pixel, image);
-
-    return next_pixel;
-}
-
-vec3 effect_high_noize(vec2 pixel) {
-    vec3 noize_presence = noize(0.00001 * presence.window) * color(seconds * 0.1413);
-    vec3 noize_brilliance =  noize(0.00001 * brilliance.window) * color(seconds * 0.09384756);
-    return noize_presence + noize_brilliance;
-}
-
-/* MAIN */
-
-vec3 visualizer_front(ivec2 ipixel, ivec2 iimage) {
-    vec2 pixel = vec2(ipixel);
-    vec2 image = vec2(iimage);
-    vec2 center = image / 2;
-
-    vec3 result = vec3(0);
-
-    /* vec3 transform_prev = effect_transform_prev(pixel, image); */
-    /* result += transform_prev; */
-
-    vec3 frequency_orbs = effect_frequency_orbs_front(pixel, image);
-    result += frequency_orbs;
-
-    /* vec3 high_noize = effect_high_noize(pixel); */
-    /* result += high_noize; */
-
-    return clamp(result, 0, 1);
-}
+layout(rgba32f, binding = 0) uniform image2D present;
+layout(rgba32f, binding = 1) uniform image2D back_a;
+layout(rgba32f, binding = 2) uniform image2D front_a;
+layout(rgba32f, binding = 3) uniform image2D back_b;
+layout(rgba32f, binding = 4) uniform image2D front_b;
+layout(rgba32f, binding = 5) uniform image2D back_c;
+layout(rgba32f, binding = 6) uniform image2D front_c;
 
 void main() {
     ivec2 ipixel_coords = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 iimage_size = ivec2(gl_NumWorkGroups.xy);
-    vec3 pixel_front = visualizer_front(ipixel_coords, iimage_size) * 2;
 
-    vec3 pixel_back_1 = imageLoad(back_frame, ipixel_coords).xyz;
-    vec3 pixel_back_2 = imageLoad(back_frame, iimage_size - ipixel_coords - ivec2(1)).xyz;
+    vec3 pixel_back_a = imageLoad(back_a, ipixel_coords).xyz;
+    vec3 pixel_back_b = imageLoad(back_b, ipixel_coords).xyz;
+    vec3 pixel_back_c = imageLoad(back_c, ipixel_coords).xyz;
 
-    imageStore(present_frame, ipixel_coords, vec4((pixel_back_1 + pixel_back_2) / 2 + pixel_front, 1));
+    imageStore(present, ipixel_coords, vec4(pixel_back_a + pixel_back_b + pixel_back_c, 1));
 }
