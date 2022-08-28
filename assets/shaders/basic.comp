@@ -96,21 +96,45 @@ float random_float(void) {
 float E = 2.71828182845904523536028;
 float PI = 3.14159265358979323846264;
 
+vec3 merge(vec3 ll, vec3 lu, vec3 ul, vec3 uu, vec2 fract) {
+  vec3 l = mix(ll, lu, fract.y);
+  vec3 u = mix(ul, uu, fract.y);
+  return mix(l, u, fract.x);
+}
+
+#define LOAD_MERGE(image) \
+    vec3 ll = imageLoad(image, base + ivec2(0)).rgb;\
+    vec3 lu = imageLoad(image, base + ivec2(0, 1)).rgb;\
+    vec3 ul = imageLoad(image, base + ivec2(1, 0)).rgb;\
+    vec3 uu = imageLoad(image, base + ivec2(1)).rgb;\
+    return merge(ll, lu, ul, uu, fract(pos));
+
 /**
  * Get average pixel at `pos` in the previous frame.
  */
-vec3 read_a_at(vec2 pos) {
+vec3 read_at(int index, vec2 pos) {
     ivec2 base = ivec2(floor(pos));
-    vec3 ll = imageLoad(front_a, base + ivec2(0)).rgb;
-    vec3 lu = imageLoad(front_a, base + ivec2(0, 1)).rgb;
-    vec3 ul = imageLoad(front_a, base + ivec2(1, 0)).rgb;
-    vec3 uu = imageLoad(front_a, base + ivec2(1)).rgb;
 
-    vec2 fract = fract(pos);
+    if (index == 0) {
+        vec3 ll = imageLoad(front_a, base + ivec2(0)).rgb;
+        vec3 lu = imageLoad(front_a, base + ivec2(0, 1)).rgb;
+        vec3 ul = imageLoad(front_a, base + ivec2(1, 0)).rgb;
+        vec3 uu = imageLoad(front_a, base + ivec2(1)).rgb;
+        return merge(ll, lu, ul, uu, fract(pos));
+    } else if( index == 1) {
+        vec3 ll = imageLoad(front_b, base + ivec2(0)).rgb;
+        vec3 lu = imageLoad(front_b, base + ivec2(0, 1)).rgb;
+        vec3 ul = imageLoad(front_b, base + ivec2(1, 0)).rgb;
+        vec3 uu = imageLoad(front_b, base + ivec2(1)).rgb;
+        return merge(ll, lu, ul, uu, fract(pos));
+    } else {
+        vec3 ll = imageLoad(front_c, base + ivec2(0)).rgb;
+        vec3 lu = imageLoad(front_c, base + ivec2(0, 1)).rgb;
+        vec3 ul = imageLoad(front_c, base + ivec2(1, 0)).rgb;
+        vec3 uu = imageLoad(front_c, base + ivec2(1)).rgb;
+        return merge(ll, lu, ul, uu, fract(pos));
+    }
 
-    vec3 l = mix(ll, lu, fract.y);
-    vec3 u = mix(ul, uu, fract.y);
-    return mix(l, u, fract.x);
 }
 
 vec2 dft_at(int index) { return vec2(dft[index], index == 0 || index == (dft_size / 2) ? 0.0 : dft[dft_size - index]); }
@@ -146,6 +170,14 @@ float orb(vec2 pixel_position, vec2 orb_position, float radius) {
     // https://www.wolframalpha.com/input?i=e+%5E+-%28x*2.5%29%5E2+%3D+0.001
     vec2 delta = 2.5 * (pixel_position - orb_position) / radius;
     return pow(E, -dot(delta, delta));
+}
+
+float donut(vec2 xy, vec2 center, float radius) {
+    // For reference see:
+    // https://www.wolframalpha.com/input?i=plot+e+%5E-%28%282.5*+4*%280.25+*+sqrt%28x*x+%2B+y*y%29-1%29%29%5E2%29
+    // e^-(2.5 * radius * (length(d) / radius - 1) )^2
+    float v = 2.5 * radius * (length(xy - center) / radius - 1);
+    return pow(E, -(v * v));
 }
 
 vec3 make_orb(float offset_factor, float movement_factor, float vibro_factor, float radius, float color_offset,
@@ -195,14 +227,12 @@ vec3 high_band_data_orb(BandData band, vec2 pixel, vec2 image) {
 
 /* EFFECTS */
 
-vec3 effect_frame(vec2 pixel, vec2 image) {
-    vec2 img_half = image * 0.5;
-    vec2 delta = abs(pixel - img_half) - img_half;
-    bool at_border = delta.x < 4 || delta.y < 4;
-    return at_border && is_beat ? color(float(beats) * 2 * 3.1415 * 0.3333) : vec3(0);
+vec3 effect_frame(vec2 xy) {
+    float strength = pow(donut(xy, vec2(0), 0.5), 2);
+    return is_beat ? pow(strength, 4) * color(float(beats) * 2 * 3.1415 * 0.3333) : vec3(0);
 }
 
-vec3 effect_transform_prev_a(vec2 pixel, vec2 image) {
+vec3 effect_transform_prev(int index, vec2 pixel, vec2 image) {
     vec2 center = image / 2;
 
     float movement = lower_midrange.smooth_window + midrange.smooth_window + higher_midrange.smooth_window;
@@ -223,64 +253,53 @@ vec3 effect_transform_prev_a(vec2 pixel, vec2 image) {
     vec2 transformed = rotated + transform_by;
 
     float damping = 0.99;
-    return damping * read_a_at(transformed);
+    return damping * read_at(index, transformed);
 }
 
 vec3 effect_frequency_orbs_low(vec2 pixel, vec2 image) {
-    return (low_band_data_orb(sub_bass, pixel, image) + low_band_data_orb(bass, pixel, image) +
-            low_band_data_orb(lower_midrange, pixel, image));
+    vec3 a = max(low_band_data_orb(sub_bass, pixel, image), low_band_data_orb(bass, pixel, image));
+    return max(a, low_band_data_orb(lower_midrange, pixel, image));
 }
 
 vec3 effect_frequency_orbs_high(vec2 pixel, vec2 image) {
-    return (high_band_data_orb(midrange, pixel, image) + high_band_data_orb(higher_midrange, pixel, image) +
-            high_band_data_orb(presence, pixel, image) + high_band_data_orb(brilliance, pixel, image));
+    vec3 a = max(high_band_data_orb(midrange, pixel, image), high_band_data_orb(higher_midrange, pixel, image));
+    vec3 b = max(high_band_data_orb(presence, pixel, image), high_band_data_orb(brilliance, pixel, image));
+    return max(a, b);
+
 }
 
 vec3 effect_high_noize() {
-    vec3 noize_presence = noize(0.00001 * presence.window) * color(seconds * 0.1413);
-    vec3 noize_brilliance = noize(0.00001 * brilliance.window) * color(seconds * 0.09384756);
+    vec3 noize_presence = noize(0.000005 * presence.window) * color(seconds * 0.1413);
+    vec3 noize_brilliance = noize(0.000005 * brilliance.window) * color(seconds * 0.09384756);
     return noize_presence + noize_brilliance;
 }
 
 /* MAIN */
 
-/* vec3 visualizer_front(ivec2 ipixel, ivec2 iimage) { */
-/*     vec3 result = vec3(0); */
-/*  */
-/*     #<{(| vec3 transform_prev = effect_transform_prev(pixel, image); |)}># */
-/*     #<{(| result += transform_prev; |)}># */
-/*  */
-/*     vec3 frequency_orbs = effect_frequency_orbs_front(pixel, image); */
-/*     result += frequency_orbs; */
-/*  */
-/*     #<{(| vec3 high_noize = effect_high_noize(pixel); |)}># */
-/*     #<{(| result += high_noize; |)}># */
-/*  */
-/*     vec3 frame = effect_frame(pixel, image); */
-/*     result += frame; */
-/*  */
-/*     return clamp(result, 0, 1); */
-/* } */
-
 void main() {
     ivec2 ipixel = ivec2(gl_GlobalInvocationID.xy);
     ivec2 iimage = ivec2(gl_NumWorkGroups.xy * gl_WorkGroupSize.xy);
+
+    vec2 xy_abs = 2.0 * vec2(ipixel) / vec2(iimage) - 1;
+    // I thought this would be the other way around....
+    vec2 scaling = vec2(iimage) / vec2((iimage.x + iimage.y) / 2);
+    vec2 xy = xy_abs * scaling;
 
     vec2 pixel = vec2(ipixel);
     vec2 image = vec2(iimage);
     vec2 center = image / 2;
 
     // Rotate previous on texture A.
-    /* vec3 transform_prev = effect_transform_prev_a(pixel, image); */
-    /* imageStore(back_a, ipixel, vec4(transform_prev, 1)); */
+    vec3 transform_prev_a = effect_transform_prev(0, pixel, image);
 
-    // Orbs to texture B.
-    vec3 frequency_orbs = effect_frequency_orbs_low(pixel, image);
+    vec3 frame = effect_frame(xy);
     vec3 high_noize = effect_high_noize();
-    imageStore(back_b, ipixel, vec4(frequency_orbs + high_noize, 1));
 
-    /* vec3 pixel_back_2 = imageLoad(back_b, iimage - ipixel - ivec2(1)).xyz; */
-    /* vec3 frame = effect_frame(pixel, image); */
+    vec3 frequency_orbs = effect_frequency_orbs_low(pixel, image);
+    vec3 frequency_orbs_mirror = effect_frequency_orbs_low(image - pixel, image);
+
+    vec3 pixel_a = max(frame ,transform_prev_a) + high_noize + frequency_orbs + frequency_orbs_mirror;
+    imageStore(back_a, ipixel, vec4(pixel_a, 1));
 
     // High freq orbs to texture C.
     vec3 frequency_orbs_high = effect_frequency_orbs_high(pixel, image);

@@ -20,11 +20,11 @@ layout(rgba32f, binding = 5) uniform image2D back_c;
 layout(rgba32f, binding = 6) uniform image2D front_c;
 
 void main() {
-    ivec2 ipixel_coords = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 ipixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 iimage = ivec2(gl_NumWorkGroups.xy * gl_WorkGroupSize.xy);
 
-    vec3 pixel_back_a = imageLoad(back_a, ipixel_coords).xyz;
-    vec3 pixel_back_b = imageLoad(back_b, ipixel_coords).xyz;
-    vec3 pixel_back_c = imageLoad(back_c, ipixel_coords).xyz;
+    vec3 pixel_back_a = imageLoad(back_a, ipixel).xyz;
+    vec3 pixel_back_c = imageLoad(back_c, ipixel).xyz;
 
-    imageStore(present, ipixel_coords, vec4(pixel_back_a + pixel_back_b + pixel_back_c, 1));
+    imageStore(present, ipixel, vec4(pixel_back_a + pixel_back_c, 1));
 }
