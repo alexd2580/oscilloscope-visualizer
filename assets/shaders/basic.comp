@@ -91,6 +91,17 @@ float random_float(void) {
     return abs(float(res) / float(1 << 31));
 }
 
+uint random_int(void) {
+    int x = int(gl_GlobalInvocationID.x);
+    int y = int(gl_GlobalInvocationID.y);
+    int seed_index = y * int(gl_NumWorkGroups.x) + x;
+
+    uint res = pcg(random_seed[seed_index]);
+    random_seed[seed_index] = res;
+
+    return res;
+}
+
 /* UTILITY */
 
 float E = 2.71828182845904523536028;
@@ -197,7 +208,7 @@ vec3 high_band_data_orb(BandData band, vec2 pixel, vec2 image) {
 
 vec3 effect_frame(vec2 pixel, vec2 image) {
     vec2 img_half = image * 0.5;
-    vec2 delta = abs(pixel - img_half) - img_half;
+    vec2 delta = -(abs(pixel - img_half) - img_half);
     bool at_border = delta.x < 4 || delta.y < 4;
     return at_border && is_beat ? color(float(beats) * 2 * 3.1415 * 0.3333) : vec3(0);
 }
@@ -242,6 +253,15 @@ vec3 effect_high_noize() {
     return noize_presence + noize_brilliance;
 }
 
+vec3 effect_boop(vec2 pixel, vec2 image) {
+    /* return (is_beat ? 1.0 : 0.0) * clamp(10 * make_orb(beats, beats, 1, bass.window / 10, beats, pixel, image), 0,
+     * 1); */
+    vec2 boop_pos = image * (sin2(beats, 2.123234345, 2.239835476) + 1) / 2;
+    float dist = length(pixel - boop_pos);
+    bool in_radius = dist < bass.window / 10;
+    return is_beat && in_radius ? color(beats) : vec3(0.0);
+}
+
 /* MAIN */
 
 /* vec3 visualizer_front(ivec2 ipixel, ivec2 iimage) { */
@@ -262,6 +282,54 @@ vec3 effect_high_noize() {
 /*     return clamp(result, 0, 1); */
 /* } */
 
+/* vec3 prev_c_average(ivec2 ipixel, ivec2 iimage) { */
+/*     vec3 s = vec3(0); */
+/*            // return imageLoad(front_c, ipixel - ivec2(1) + ivec2(1, 1)).rgb; */
+/*  */
+/*     int m = 0; */
+/*     vec3 colors[9]; */
+/*     for(int i = 0; i < 3; i++) { */
+/*         for(int j = 0; j < 3; j++) { */
+/*             colors[i * 3 + j] = imageLoad(front_c, ipixel - ivec2(1) + ivec2(i, j)).rgb; */
+/*             // colors[(i+1) * 3 + j + 1] = imageLoad(front_c, clamp(ipixel + ivec2(i, j), ivec2(0), iimage)).rgb; */
+/*             s += colors[i * 3 + j]; */
+/*  */
+/*             if(length(colors[i]) > length(colors[m])) { */
+/*                 m = i; */
+/*             } */
+/*         } */
+/*     } */
+/*  */
+/*     int counts[9]; */
+/*     int prev_max = -1; */
+/*     float prev_value = -1.0; */
+/*     // int prev_max = int(random_int()) % 9; */
+/*     bool true_max = false; */
+/*     for(int i = 0; i < 9; i++) { */
+/*         counts[i] = 0; */
+/*         for(int j = 0; j < 9; j++) { */
+/*             counts[i] += length(colors[i] - colors[j]) < 0.01 ? 1 : 0; */
+/*         } */
+/*  */
+/*         // if(counts[i] < counts[prev_max]) { */
+/*         //     true_max = true; */
+/*         //     prev_max = i; */
+/*         // } else if(counts[i] == counts[prev_max]) { */
+/*         //     true_max = false; */
+/*         // } */
+/*  */
+/*         if(length(colors[i]) > prev_value) { */
+/*             prev_value = length(colors[i]); */
+/*             true_max = true; */
+/*             prev_max = i; */
+/*         } else if(length(colors[i]) - prev_value) < 0.1) { */
+/*             true_max = false; */
+/*         } */
+/*     } */
+/*  */
+/*     return clamp(true_max ? colors[prev_max] : 0.99 * colors[4], 0, 1); */
+/* } */
+
 void main() {
     ivec2 ipixel = ivec2(gl_GlobalInvocationID.xy);
     ivec2 iimage = ivec2(gl_NumWorkGroups.xy * gl_WorkGroupSize.xy);
@@ -270,19 +338,23 @@ void main() {
     vec2 image = vec2(iimage);
     vec2 center = image / 2;
 
+    vec3 transform_prev = effect_transform_prev_a(pixel, image);
+    vec3 frequency_orbs = effect_frequency_orbs_low(pixel, image);
+    vec3 frequency_orbs_high = effect_frequency_orbs_high(pixel, image);
+    vec3 high_noize = effect_high_noize();
+    vec3 frame = effect_frame(pixel, image);
+    vec3 boop = effect_boop(pixel, image);
+    vec3 prev_c = vec3(0); //prev_c_average(ipixel, iimage) * 0.9999;
+    /* vec3 prev_c = imageLoad(front_c, ipixel).rgb * 0.9; */
+
     // Rotate previous on texture A.
-    /* vec3 transform_prev = effect_transform_prev_a(pixel, image); */
-    /* imageStore(back_a, ipixel, vec4(transform_prev, 1)); */
+    imageStore(back_a, ipixel, vec4(frame + transform_prev + frequency_orbs + high_noize, 1));
 
     // Orbs to texture B.
-    vec3 frequency_orbs = effect_frequency_orbs_low(pixel, image);
-    vec3 high_noize = effect_high_noize();
-    imageStore(back_b, ipixel, vec4(frequency_orbs + high_noize, 1));
+    imageStore(back_b, ipixel, vec4(frequency_orbs_high, 1));
 
     /* vec3 pixel_back_2 = imageLoad(back_b, iimage - ipixel - ivec2(1)).xyz; */
-    /* vec3 frame = effect_frame(pixel, image); */
 
     // High freq orbs to texture C.
-    vec3 frequency_orbs_high = effect_frequency_orbs_high(pixel, image);
-    imageStore(back_c, ipixel, vec4(frequency_orbs_high, 1));
+    imageStore(back_c, ipixel, vec4(prev_c + boop, 1));
 }
