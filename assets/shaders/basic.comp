@@ -3,11 +3,8 @@
 /* #extension GL_NV_gpu_shader5 : enable */
 /* #extension GL_ARB_gpu_shader_int64 : enable */
 
-// uvec3 gl_NumWorkGroups; // global work group size we gave to glDispatchCompute() = window / 8
-// uvec3 gl_WorkGroupSize; // local work group size we defined with layout = 8
-// uvec3 gl_WorkGroupID; // position of current invocation in global work group =
-// uvec3 gl_LocalInvocationID; // position of current invocation in local work group =
-// uvec3 gl_GlobalInvocationID; // unique index of current invocation in global work group =
+// image size = NumWorkGroups * WorkGroupSize
+// GlobalInvocationIndex = WorkGroupID * WorkGroupSize + LocalInvocationID
 
 /* UNIFORMS */
 
@@ -16,12 +13,8 @@ layout(local_size_x = 8, local_size_y = 8) in;
 
 // Use the image2D sampler to address specific pixels directly.
 layout(rgba32f, binding = 0) uniform image2D present;
-layout(rgba32f, binding = 1) uniform image2D back_a;
-layout(rgba32f, binding = 2) uniform image2D front_a;
-layout(rgba32f, binding = 3) uniform image2D back_b;
-layout(rgba32f, binding = 4) uniform image2D front_b;
-layout(rgba32f, binding = 5) uniform image2D back_c;
-layout(rgba32f, binding = 6) uniform image2D front_c;
+layout(rgba32f, binding = 1) uniform image2D back;
+layout(rgba32f, binding = 2) uniform image2D front;
 
 layout(binding = 1) uniform timer { float seconds; };
 
@@ -80,26 +73,17 @@ uint pcg(uint v) {
     return (word >> 22u) ^ word;
 }
 
-float random_float(void) {
-    int x = int(gl_GlobalInvocationID.x);
-    int y = int(gl_GlobalInvocationID.y);
-    int seed_index = y * int(gl_NumWorkGroups.x) + x;
-
-    uint res = pcg(random_seed[seed_index]);
-    random_seed[seed_index] = res;
-
-    return abs(float(res) / float(1 << 31));
-}
-
 uint random_int(void) {
-    int x = int(gl_GlobalInvocationID.x);
-    int y = int(gl_GlobalInvocationID.y);
-    int seed_index = y * int(gl_NumWorkGroups.x) + x;
+    uint seed_index = gl_GlobalInvocationID.y * gl_WorkGroupSize.x * gl_NumWorkGroups.x + gl_GlobalInvocationID.x;
 
     uint res = pcg(random_seed[seed_index]);
     random_seed[seed_index] = res;
 
     return res;
+}
+
+float random_float(void) {
+    return abs(float(random_int()) / float(1 << 31));
 }
 
 /* UTILITY */
@@ -110,18 +94,26 @@ float PI = 3.14159265358979323846264;
 /**
  * Get average pixel at `pos` in the previous frame.
  */
-vec3 read_a_at(vec2 pos) {
-    ivec2 base = ivec2(floor(pos));
-    vec3 ll = imageLoad(front_a, base + ivec2(0)).rgb;
-    vec3 lu = imageLoad(front_a, base + ivec2(0, 1)).rgb;
-    vec3 ul = imageLoad(front_a, base + ivec2(1, 0)).rgb;
-    vec3 uu = imageLoad(front_a, base + ivec2(1)).rgb;
+vec4 read_front_at(ivec2 layer, vec2 pos) {
+    ivec2 iimage = ivec2(gl_WorkGroupSize.xy * gl_NumWorkGroups.xy);
+    pos = min(pos, vec2(iimage - vec2(1)));
+    ivec2 base = ivec2(floor(pos)) + layer * iimage;
+
+    vec4 ll = imageLoad(front, base + ivec2(0));
+    vec4 lu = imageLoad(front, base + ivec2(0, 1));
+    vec4 ul = imageLoad(front, base + ivec2(1, 0));
+    vec4 uu = imageLoad(front, base + ivec2(1));
 
     vec2 fract = fract(pos);
 
-    vec3 l = mix(ll, lu, fract.y);
-    vec3 u = mix(ul, uu, fract.y);
+    vec4 l = mix(ll, lu, fract.y);
+    vec4 u = mix(ul, uu, fract.y);
     return mix(l, u, fract.x);
+}
+
+void store_back_at(ivec2 layer, ivec2 pos, vec4 value) {
+    ivec2 iimage = ivec2(gl_WorkGroupSize.xy * gl_NumWorkGroups.xy);
+    imageStore(back, layer * iimage + pos, value);
 }
 
 vec2 dft_at(int index) { return vec2(dft[index], index == 0 || index == (dft_size / 2) ? 0.0 : dft[dft_size - index]); }
@@ -146,7 +138,7 @@ float noize(float x) { return random_float() < x ? random_float() : 0.0; }
 
 vec2 sin2(float factor, float scale_x, float scale_y) { return vec2(sin(scale_x * factor), sin(scale_y * factor)); }
 
-/* ORRRRRBBB */
+/* ORBS */
 
 /**
  * Compute the brightness of an orb with `radius` radius,
@@ -206,6 +198,12 @@ vec3 high_band_data_orb(BandData band, vec2 pixel, vec2 image) {
 
 /* EFFECTS */
 
+vec3 effect_high_noize() {
+    vec3 noize_presence = noize(0.00001 * presence.window) * color(seconds * 0.1413);
+    vec3 noize_brilliance = noize(0.00001 * brilliance.window) * color(seconds * 0.09384756);
+    return noize_presence + noize_brilliance;
+}
+
 vec3 effect_frame(vec2 pixel, vec2 image) {
     vec2 img_half = image * 0.5;
     vec2 delta = -(abs(pixel - img_half) - img_half);
@@ -213,7 +211,55 @@ vec3 effect_frame(vec2 pixel, vec2 image) {
     return at_border && is_beat ? color(float(beats) * 2 * 3.1415 * 0.3333) : vec3(0);
 }
 
-vec3 effect_transform_prev_a(vec2 pixel, vec2 image) {
+vec3 effect_ring(vec2 pixel, vec2 image, float radius, float width) {
+    vec2 delta2 = pixel - image / 2;
+    float dist_squared = dot(delta2, delta2);
+    bool in_width = abs(dist_squared - radius * radius) < width * width;
+    return in_width && is_beat ? color(float(beats) * 2 * 3.1415 * 0.4) : vec3(0);
+}
+
+vec3 effect_frequency_orbs_low(vec2 pixel, vec2 image) {
+    return (low_band_data_orb(sub_bass, pixel, image) + low_band_data_orb(bass, pixel, image) +
+            low_band_data_orb(lower_midrange, pixel, image));
+}
+
+vec3 effect_frequency_orbs_high(vec2 pixel, vec2 image) {
+    return (high_band_data_orb(midrange, pixel, image) + high_band_data_orb(higher_midrange, pixel, image) +
+            high_band_data_orb(presence, pixel, image) + high_band_data_orb(brilliance, pixel, image));
+}
+
+vec3 effect_pcm_line(ivec2 pixel, ivec2 image) {
+    int bin_size = 50;
+
+    float sum = 0;
+    for (int i =0; i < bin_size; i++) {
+        sum += pcm[pcm_samples - bin_size * pixel.x - i];
+    }
+    float pcm_left = sum / bin_size;
+
+    float relative_y = abs((2 * float(pixel.y) / image.y) - 1) * 0.5;
+    vec3 c = color(float(sample_index - bin_size * pixel.x) * 0.0001);
+    return pcm_left < relative_y ? vec3(0) : c;
+}
+
+vec3 effect_pcm_circle(ivec2 ipixel, ivec2 iimage) {
+    vec2 center = iimage / 2;
+    vec2 relative = ((ipixel - center) / center);
+
+    float min_dist_2 = 1.0 / 0.0;
+
+    for (int i=0; i< 100; i++) {
+        int index1 = (pcm_samples - 1 - i);
+        int index2 = (pcm_samples - 100 - i);
+        vec2 point = vec2(pcm[index1], pcm[index2]);
+        vec2 delta = relative - point;
+        float distance = dot(delta, delta);
+        min_dist_2 = min(min_dist_2, distance);
+    }
+    return min_dist_2 < 0.00001 ? vec3(1) : vec3(0);
+}
+
+vec3 effect_transform_prev(vec2 pixel, vec2 image) {
     vec2 center = image / 2;
 
     float movement = lower_midrange.smooth_window + midrange.smooth_window + higher_midrange.smooth_window;
@@ -231,36 +277,38 @@ vec3 effect_transform_prev_a(vec2 pixel, vec2 image) {
     vec2 rotated = rotate(rotate_at, rotate_by, scaled);
 
     vec2 transform_by = 5 * vec2(sin(seconds / 6.1), sin(seconds / 5.7212));
-    vec2 transformed = rotated + transform_by;
+    vec2 transformed = clamp(rotated + transform_by, vec2(0), image);
 
     float damping = 0.99;
-    return damping * read_a_at(transformed);
+
+    ivec2 ipixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 iimage = ivec2(gl_NumWorkGroups.xy * gl_WorkGroupSize.xy);
+    ivec2 iimage_x = ivec2(iimage.x, 0);
+    ivec2 iimage_y = ivec2(0, iimage.y);
+
+    vec3 p1 = read_front_at(ivec2(0, 0), transformed).xyz;
+    vec3 p2 = read_front_at(ivec2(0, 1), transformed).xyz;
+    vec3 p3 = read_front_at(ivec2(0, 2), transformed).xyz;
+    vec3 p4 = read_front_at(ivec2(1, 0), transformed).xyz;
+    vec3 p5 = read_front_at(ivec2(1, 1), transformed).xyz;
+    vec3 p6 = read_front_at(ivec2(1, 2), transformed).xyz;
+    vec3 p7 = read_front_at(ivec2(2, 0), transformed).xyz;
+    vec3 p8 = read_front_at(ivec2(2, 1), transformed).xyz;
+    vec3 p9 = read_front_at(ivec2(2, 2), transformed).xyz;
+
+    vec3 sum = p1 + p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9;
+
+    return damping * sum;
 }
 
-vec3 effect_frequency_orbs_low(vec2 pixel, vec2 image) {
-    return (low_band_data_orb(sub_bass, pixel, image) + low_band_data_orb(bass, pixel, image) +
-            low_band_data_orb(lower_midrange, pixel, image));
-}
-
-vec3 effect_frequency_orbs_high(vec2 pixel, vec2 image) {
-    return (high_band_data_orb(midrange, pixel, image) + high_band_data_orb(higher_midrange, pixel, image) +
-            high_band_data_orb(presence, pixel, image) + high_band_data_orb(brilliance, pixel, image));
-}
-
-vec3 effect_high_noize() {
-    vec3 noize_presence = noize(0.00001 * presence.window) * color(seconds * 0.1413);
-    vec3 noize_brilliance = noize(0.00001 * brilliance.window) * color(seconds * 0.09384756);
-    return noize_presence + noize_brilliance;
-}
-
-vec3 effect_boop(vec2 pixel, vec2 image) {
-    /* return (is_beat ? 1.0 : 0.0) * clamp(10 * make_orb(beats, beats, 1, bass.window / 10, beats, pixel, image), 0,
-     * 1); */
-    vec2 boop_pos = image * (sin2(beats, 2.123234345, 2.239835476) + 1) / 2;
-    float dist = length(pixel - boop_pos);
-    bool in_radius = dist < bass.window / 10;
-    return is_beat && in_radius ? color(beats) : vec3(0.0);
-}
+// vec3 effect_boop(vec2 pixel, vec2 image) {
+//     /* return (is_beat ? 1.0 : 0.0) * clamp(10 * make_orb(beats, beats, 1, bass.window / 10, beats, pixel, image), 0,
+//      * 1); */
+//     vec2 boop_pos = image * (sin2(beats + 100 * sin(beats), 2.123234345, 2.239835476) + 1) / 2;
+//     float dist = length(pixel - boop_pos);
+//     bool in_radius = dist < bass.window / 10;
+//     return is_beat && in_radius ? color(beats) : vec3(0.0);
+// }
 
 /* MAIN */
 
@@ -282,53 +330,102 @@ vec3 effect_boop(vec2 pixel, vec2 image) {
 /*     return clamp(result, 0, 1); */
 /* } */
 
-/* vec3 prev_c_average(ivec2 ipixel, ivec2 iimage) { */
-/*     vec3 s = vec3(0); */
-/*            // return imageLoad(front_c, ipixel - ivec2(1) + ivec2(1, 1)).rgb; */
-/*  */
-/*     int m = 0; */
-/*     vec3 colors[9]; */
-/*     for(int i = 0; i < 3; i++) { */
-/*         for(int j = 0; j < 3; j++) { */
-/*             colors[i * 3 + j] = imageLoad(front_c, ipixel - ivec2(1) + ivec2(i, j)).rgb; */
-/*             // colors[(i+1) * 3 + j + 1] = imageLoad(front_c, clamp(ipixel + ivec2(i, j), ivec2(0), iimage)).rgb; */
-/*             s += colors[i * 3 + j]; */
-/*  */
-/*             if(length(colors[i]) > length(colors[m])) { */
-/*                 m = i; */
-/*             } */
-/*         } */
-/*     } */
-/*  */
-/*     int counts[9]; */
-/*     int prev_max = -1; */
-/*     float prev_value = -1.0; */
-/*     // int prev_max = int(random_int()) % 9; */
-/*     bool true_max = false; */
-/*     for(int i = 0; i < 9; i++) { */
-/*         counts[i] = 0; */
-/*         for(int j = 0; j < 9; j++) { */
-/*             counts[i] += length(colors[i] - colors[j]) < 0.01 ? 1 : 0; */
-/*         } */
-/*  */
-/*         // if(counts[i] < counts[prev_max]) { */
-/*         //     true_max = true; */
-/*         //     prev_max = i; */
-/*         // } else if(counts[i] == counts[prev_max]) { */
-/*         //     true_max = false; */
-/*         // } */
-/*  */
-/*         if(length(colors[i]) > prev_value) { */
-/*             prev_value = length(colors[i]); */
-/*             true_max = true; */
-/*             prev_max = i; */
-/*         } else if(length(colors[i]) - prev_value) < 0.1) { */
-/*             true_max = false; */
-/*         } */
-/*     } */
-/*  */
-/*     return clamp(true_max ? colors[prev_max] : 0.99 * colors[4], 0, 1); */
-/* } */
+vec3 fingerprint(ivec2 ipixel, ivec2 iimage) {
+    vec3 s = vec3(0);
+           // return imageLoad(front_c, ipixel - ivec2(1) + ivec2(1, 1)).rgb;
+
+    int m = 0;
+
+    vec3 colors[25];
+    for(int i = 0; i < 5; i++) {
+        for(int j = 0; j < 5; j++) {
+            colors[i * 5 + j] = read_front_at(ivec2(0), clamp(ipixel - ivec2(2) + ivec2(i, j), ivec2(0), iimage)).rgb;
+            // colors[(i+1) * 3 + j + 1] = imageLoad(front_c, clamp(ipixel + ivec2(i, j), ivec2(0), iimage)).rgb;
+            s += colors[i * 5 + j];
+
+            if(length(colors[i]) > length(colors[m])) {
+                m = i;
+            }
+        }
+    }
+
+    vec3 avg_ = s / 25;
+    if (length(avg_) > length(colors[2 * 5 + 2])) {
+        return avg_ * 1.295;
+    } else {
+        return avg_ * 0.65;
+    }
+}
+
+vec3 prev_c_average(ivec2 ipixel, ivec2 iimage) {
+    vec3 s = vec3(0);
+           // return imageLoad(front_c, ipixel - ivec2(1) + ivec2(1, 1)).rgb;
+
+    int m = 0;
+
+    vec3 colors[25];
+    for(int i = 0; i < 5; i++) {
+        for(int j = 0; j < 5; j++) {
+            colors[i * 5 + j] = read_front_at(ivec2(0), clamp(ipixel - ivec2(2) + ivec2(i, j), ivec2(0), iimage)).rgb;
+            // colors[(i+1) * 3 + j + 1] = imageLoad(front_c, clamp(ipixel + ivec2(i, j), ivec2(0), iimage)).rgb;
+            s += colors[i * 5 + j];
+
+            if(length(colors[i]) > length(colors[m])) {
+                m = i;
+            }
+        }
+    }
+
+    return clamp(colors[2*5 + 2] - s / 25, 0, 1);
+
+    int counts[9];
+    int prev_max = -1;
+    float prev_value = -1.0;
+    // int prev_max = int(random_int()) % 9;
+    bool true_max = false;
+    for(int i = 0; i < 9; i++) {
+        counts[i] = 0;
+        for(int j = 0; j < 9; j++) {
+            counts[i] += length(colors[i] - colors[j]) < 0.01 ? 1 : 0;
+        }
+
+        // if(counts[i] < counts[prev_max]) {
+        //     true_max = true;
+        //     prev_max = i;
+        // } else if(counts[i] == counts[prev_max]) {
+        //     true_max = false;
+        // }
+
+        if(length(colors[i]) > prev_value) {
+            prev_value = length(colors[i]);
+            true_max = true;
+            prev_max = i;
+        } else if(length(colors[i]) - prev_value < 0.1) {
+            true_max = false;
+        }
+    }
+
+    return clamp(true_max ? colors[prev_max] : 0.99 * colors[4], 0, 1);
+}
+
+vec3 propagate(ivec2 ipixel, ivec2 iimage) {
+
+            return read_front_at(ivec2(0), ipixel).rgb;
+    vec3 c = read_front_at(ivec2(0), ipixel).rgb;
+
+    vec3 max_color = vec3(0);
+    float sum_secs = 0;
+
+    for(int x = max(0, ipixel.x - 1); x < min(ipixel.x + 2, iimage.x); x++) {
+        for(int y = max(0, ipixel.y - 1); y < min(ipixel.y + 2, iimage.y); y++) {
+            vec3 pix = read_front_at(ivec2(0), ivec2(x, y)).rgb;
+            sum_secs += 100 * fract(100 * pix.r);
+            max_color = max(max_color, pix);
+        }
+    }
+
+    return max_color * 0;
+}
 
 void main() {
     ivec2 ipixel = ivec2(gl_GlobalInvocationID.xy);
@@ -338,23 +435,39 @@ void main() {
     vec2 image = vec2(iimage);
     vec2 center = image / 2;
 
-    vec3 transform_prev = effect_transform_prev_a(pixel, image);
-    vec3 frequency_orbs = effect_frequency_orbs_low(pixel, image);
-    vec3 frequency_orbs_high = effect_frequency_orbs_high(pixel, image);
     vec3 high_noize = effect_high_noize();
-    vec3 frame = effect_frame(pixel, image);
-    vec3 boop = effect_boop(pixel, image);
-    vec3 prev_c = vec3(0); //prev_c_average(ipixel, iimage) * 0.9999;
-    /* vec3 prev_c = imageLoad(front_c, ipixel).rgb * 0.9; */
+    store_back_at(ivec2(0, 0), ipixel, vec4(high_noize, 1));
+
+    vec3 beat_frame = effect_ring(pixel, image, min(iimage.x, iimage.y) * 0.45, 109);
+    store_back_at(ivec2(0, 1), ipixel, vec4(beat_frame, 1));
+
+    vec3 low_frequency_orbs = effect_frequency_orbs_low(pixel, image);
+    store_back_at(ivec2(0, 2), ipixel, vec4(low_frequency_orbs, 1));
+
+    vec3 high_frequency_orbs = effect_frequency_orbs_high(pixel, image);
+    store_back_at(ivec2(1, 0), ipixel, vec4(high_frequency_orbs, 1));
+
+    vec3 pcm_line = effect_pcm_line(ipixel, iimage);
+    store_back_at(ivec2(1, 1), ipixel, vec4(pcm_line, 1));
+
+    vec3 transform_prev = effect_transform_prev(pixel, image);
+    store_back_at(ivec2(2, 2), ipixel, vec4(transform_prev, 1));
+
+
+
+
+    // /* vec3 boop = effect_boop(pixel, image); */
+    // vec3 prev_c = propagate(ipixel, iimage);
+    // vec3 prev_c = imageLoad(front_c, ipixel).rgb * 0.9;
 
     // Rotate previous on texture A.
-    imageStore(back_a, ipixel, vec4(frame + transform_prev + frequency_orbs + high_noize, 1));
+    // imageStore(back_a, ipixel, vec4(frame + transform_prev + frequency_orbs + high_noize, 1));
 
-    // Orbs to texture B.
-    imageStore(back_b, ipixel, vec4(frequency_orbs_high, 1));
+    // // Orbs to texture B.
+    // imageStore(back_b, ipixel, vec4(frequency_orbs_high, 1));
 
-    /* vec3 pixel_back_2 = imageLoad(back_b, iimage - ipixel - ivec2(1)).xyz; */
+    // /* vec3 pixel_back_2 = imageLoad(back_b, iimage - ipixel - ivec2(1)).xyz; */
 
-    // High freq orbs to texture C.
-    imageStore(back_c, ipixel, vec4(prev_c + boop, 1));
+    // // High freq orbs to texture C.
+    // imageStore(back_c, ipixel, vec4(0.7 * prev_c + circle, 1));
 }

@@ -71,7 +71,7 @@ int main(int argc, char* argv[]) {
 
     struct Size size = {.w = 800, .h = 800};
     Window window = create_window(size);
-    Textures textures = create_textures(size);
+    Textures textures = create_textures(size, 3);
 
     Program basic = create_program("assets/shaders/basic.comp");
     Program basic_present = create_program("assets/shaders/basic_present.comp");

@@ -12,19 +12,51 @@ layout(local_size_x = 8, local_size_y = 8) in;
 
 // Use the image2D sampler to address specific pixels directly.
 layout(rgba32f, binding = 0) uniform image2D present;
-layout(rgba32f, binding = 1) uniform image2D back_a;
-layout(rgba32f, binding = 2) uniform image2D front_a;
-layout(rgba32f, binding = 3) uniform image2D back_b;
-layout(rgba32f, binding = 4) uniform image2D front_b;
-layout(rgba32f, binding = 5) uniform image2D back_c;
-layout(rgba32f, binding = 6) uniform image2D front_c;
+layout(rgba32f, binding = 1) uniform image2D back;
+layout(rgba32f, binding = 2) uniform image2D front;
+
+struct BandData {
+    float accumulated;
+    float window;
+    float smooth_window;
+    float avg_delta2;
+    float movement;
+    float other1, other2, other3;
+};
+
+layout(std430, binding = 5) buffer analysis_data {
+    bool is_beat;
+    int beats;
+    int bpm;
+    int other;
+
+    BandData sub_bass;
+    BandData bass;
+    BandData lower_midrange;
+    BandData midrange;
+    BandData higher_midrange;
+    BandData presence;
+    BandData brilliance;
+};
+
 
 void main() {
-    ivec2 ipixel_coords = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 ipixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 iimage = ivec2(gl_NumWorkGroups.xy * gl_WorkGroupSize.xy);
+    ivec2 iimage_x = ivec2(iimage.x, 0);
+    ivec2 iimage_y = ivec2(0, iimage.y);
 
-    vec3 pixel_back_a = imageLoad(back_a, ipixel_coords).xyz;
-    vec3 pixel_back_b = imageLoad(back_b, ipixel_coords).xyz;
-    vec3 pixel_back_c = imageLoad(back_c, ipixel_coords).xyz;
+    vec3 p1 = imageLoad(back, ipixel).xyz;
+    vec3 p2 = imageLoad(back, ipixel + iimage_x).xyz;
+    vec3 p3 = imageLoad(back, ipixel + 2 * iimage_x).xyz;
+    vec3 p4 = imageLoad(back, ipixel + iimage_y).xyz;
+    vec3 p5 = imageLoad(back, ipixel + iimage).xyz;
+    vec3 p6 = imageLoad(back, ipixel + iimage + iimage_x).xyz;
+    vec3 p7 = imageLoad(back, ipixel + 2 * iimage_y).xyz;
+    vec3 p8 = imageLoad(back, ipixel + iimage + iimage_y).xyz;
+    vec3 p9 = imageLoad(back, ipixel + 2 * iimage).xyz;
 
-    imageStore(present, ipixel_coords, vec4(pixel_back_a + pixel_back_b + pixel_back_c, 1));
+    vec3 sum = p1 + p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9;
+
+    imageStore(present, ipixel, vec4(sum, 1));
 }
