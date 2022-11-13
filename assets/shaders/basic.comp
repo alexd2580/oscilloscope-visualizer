@@ -197,7 +197,7 @@ vec3 high_band_data_orb(BandData band, vec2 pixel, vec2 image) {
 
 vec3 effect_frame(vec2 pixel, vec2 image) {
     vec2 img_half = image * 0.5;
-    vec2 delta = abs(pixel - img_half) - img_half;
+    vec2 delta = abs(abs(pixel - img_half) - img_half);
     bool at_border = delta.x < 4 || delta.y < 4;
     return at_border && is_beat ? color(float(beats) * 2 * 3.1415 * 0.3333) : vec3(0);
 }
@@ -270,17 +270,18 @@ void main() {
     vec2 image = vec2(iimage);
     vec2 center = image / 2;
 
-    // Rotate previous on texture A.
-    /* vec3 transform_prev = effect_transform_prev_a(pixel, image); */
-    /* imageStore(back_a, ipixel, vec4(transform_prev, 1)); */
-
-    // Orbs to texture B.
+    // Rotate prev a
+    vec3 transform_prev = effect_transform_prev_a(pixel, image);
+    // Low freq ors.
     vec3 frequency_orbs = effect_frequency_orbs_low(pixel, image);
+    // High noize.
     vec3 high_noize = effect_high_noize();
-    imageStore(back_b, ipixel, vec4(frequency_orbs + high_noize, 1));
+    // Beat frame.
+    vec3 frame = effect_frame(pixel, image);
+    imageStore(back_a, ipixel, vec4(frame + transform_prev + frequency_orbs + high_noize, 1));
 
     /* vec3 pixel_back_2 = imageLoad(back_b, iimage - ipixel - ivec2(1)).xyz; */
-    /* vec3 frame = effect_frame(pixel, image); */
+    /* imageStore(back_b, ipixel, vec4(frame + pixel_back_2, 1)); */
 
     // High freq orbs to texture C.
     vec3 frequency_orbs_high = effect_frequency_orbs_high(pixel, image);

@@ -88,8 +88,8 @@ void swap_and_bind_textures(Textures textures) {
     glBindImageTexture(2, textures->front_a, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA32F);
     glBindImageTexture(3, textures->back_b, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
     glBindImageTexture(4, textures->front_b, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA32F);
-    glBindImageTexture(5, textures->back_b, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
-    glBindImageTexture(6, textures->front_b, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA32F);
+    glBindImageTexture(5, textures->back_c, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
+    glBindImageTexture(6, textures->front_c, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA32F);
 }
 
 __attribute__((pure)) GLuint get_present_texture(Textures textures) { return textures->present; }

@@ -279,6 +279,11 @@ void analyze_beat(DftData dft_data, Analysis analysis, int beat_fequency_index) 
     // Not so sure about this one... SD doesn't need per-frequency fine tuning... or at least less so.
     /* bool is_local_beat = current_value > beat->beat_threshold_factor * short_average; */
     beat->is_beat = is_not_noise && is_over_sd; // && is_local_beat;
+
+    if (beat->is_beat) {
+        printf("b");
+        fflush(stdout);
+    }
 }
 
 void print_beat_analysis_debug(DftData dft_data, Analysis analysis) {

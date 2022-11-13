@@ -127,12 +127,12 @@ void* input_stream_function(void* data_raw) {
         int after_wrap = samples_available - samples_fitting;
 
         for(int i = 0; i < before_wrap; i++) {
-            pcm->ring_left[pcm->offset + i] = buffer_floats[2 * i];
-            pcm->ring_right[pcm->offset + i] = buffer_floats[2 * i + 1];
+            pcm->ring_left[pcm->offset + i] =10*  buffer_floats[2 * i];
+            pcm->ring_right[pcm->offset + i] = 10* buffer_floats[2 * i + 1];
         }
         for(int i = 0; i < after_wrap; i++) {
-            pcm->ring_left[i] = buffer_floats[2 * (before_wrap + i)];
-            pcm->ring_right[i] = buffer_floats[2 * (before_wrap + i) + 1];
+            pcm->ring_left[i] = 10* buffer_floats[2 * (before_wrap + i)];
+            pcm->ring_right[i] = 10*buffer_floats[2 * (before_wrap + i) + 1];
         }
 
         pcm->sample_index += samples_available;

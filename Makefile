@@ -83,7 +83,7 @@ release/%.o: %.c Makefile
 	$(CC) $(CFLAGS) $(INCLUDE_FLAGS) $(WFLAGS) $(CWFLAGS) $(RELEASEFLAGS) -MMD -MP -c $< -o $@
 
 run:
-	parec --raw --format=float32le | ./$(PROJNAME_RELEASE)
+	parec --raw --format=float32le --latency-msec=1 | ./$(PROJNAME_RELEASE)
 
 clean:
 	-@$(RM) -f $(wildcard $(OBJFILES_DEBUG) $(OBJFILES_RELEASE) $(DEPFILES_DEBUG) $(DEPFILES_RELEASE) $(PROJNAME_DEBUG) $(PROJNAME_RELEASE)) && \
